@@ -34,14 +34,16 @@ def get_stock_price(symbol: str) -> str:
     print(f"\n[Tool] 抓取股價: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     try:
-        time.sleep(random.uniform(1, 2))
+        time.sleep(1)
         stock = yf.Ticker(ticker_str)
-        price = stock.fast_info.get('last_price', "無法取得")
-        prev = stock.fast_info.get('previous_close', "無法取得")
+        info = stock.info
+        # 直接從 info 裡面安全地把股價拿出來
+        price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
+        prev = info.get('previousClose', '無法取得')
         return f"目前股價: {price}, 昨收價: {prev}"
     except Exception as e:
         print(f"❌ [錯誤 - 股價] {e}", flush=True)
-        return "⚠️ 股價 API 暫時被阻擋"
+        return "⚠️ 股價暫時無法取得"
 
 @tool
 def get_stock_news(symbol: str) -> str:
@@ -66,8 +68,10 @@ def get_financial_report(symbol: str) -> str:
     try:
         time.sleep(1)
         stock = yf.Ticker(ticker_str)
-        rev = stock.fast_info.get('total_revenue', "請參考新聞")
-        return f"代碼: {ticker_str}, 財務概況: 穩定運作中"
+        info = stock.info
+        rev = info.get('totalRevenue', "無法取得")
+        margins = info.get('profitMargins', "無法取得")
+        return f"代碼: {ticker_str}, 總營收: {rev}, 淨利率: {margins}"
     except Exception as e:
         print(f"❌ [錯誤 - 財報] {e}", flush=True)
         return "⚠️ 財報系統暫時無法讀取"
