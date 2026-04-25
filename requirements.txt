@@ -1,10 +1,11 @@
 fastapi
 uvicorn
-streamlit
-python-dotenv
+langchain
 langchain-google-genai
-langgraph
 langchain-community
-duckduckgo-search
 yfinance
+duckduckgo-search
+curl_cffi
+python-dotenv
+pandas
 requests
