@@ -4,7 +4,7 @@ langchain
 langchain-google-genai
 langchain-community
 yfinance
-duckduckgo-search
+ddgs
 curl_cffi
 python-dotenv
 pandas
