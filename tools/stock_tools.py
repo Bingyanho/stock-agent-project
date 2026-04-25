@@ -2,7 +2,7 @@ import yfinance as yf
 from langchain_core.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
 import time
-import random
+from functools import lru_cache # 🌟 新增：引入快取模組
 
 def _get_valid_ticker(symbol: str) -> str:
     """自動判斷台股或美股代碼"""
@@ -20,17 +20,23 @@ def _get_valid_ticker(symbol: str) -> str:
     # yfinance 預設美股不需後綴
     return symbol
 
+# 🌟 新增：建立快取中心，相同的股票代碼只會向 Yahoo 請求一次資料！
+@lru_cache(maxsize=10)
+def _get_stock_info(ticker_str: str):
+    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (有快取就不會重複出現)...", flush=True)
+    time.sleep(1) # 溫柔地停頓一下，避免被鎖
+    return yf.Ticker(ticker_str).info
+
 @tool
 def get_company_info(symbol: str) -> str:
     """取得公司正式名稱與產業類別"""
     print(f"\n[Tool] 抓取公司資料: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     try:
-        time.sleep(1)
-        stock = yf.Ticker(ticker_str)
-        info = stock.info
+        # 🌟 改用快取中心拿資料
+        info = _get_stock_info(ticker_str)
         
-        # 🌟 這裡加上明確的標註，告訴 Agent 這是官方資料
+        # 這裡加上明確的標註，告訴 Agent 這是官方資料
         official_name = info.get("longName", "未知")
         short_name = info.get("shortName", "未知")
         sector = info.get("sector", "未知")
@@ -46,9 +52,9 @@ def get_stock_price(symbol: str) -> str:
     print(f"\n[Tool] 抓取股價: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     try:
-        time.sleep(1)
-        stock = yf.Ticker(ticker_str)
-        info = stock.info
+        # 🌟 改用快取中心拿資料 (如果剛剛查過公司資料，這裡會瞬間完成！)
+        info = _get_stock_info(ticker_str)
+        
         # 直接從 info 裡面安全地把股價拿出來
         price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
         prev = info.get('previousClose', '無法取得')
@@ -62,9 +68,9 @@ def get_stock_news(symbol: str) -> str:
     """透過搜尋引擎取得最新新聞"""
     print(f"\n[Tool] 搜尋新聞: {symbol}", flush=True)
     time.sleep(2)
-    query = f"台股 {symbol} 最新財經新聞分析"
+    # 🌟 順手幫你優化：如果是美股，用英文搜尋比較準；台股維持中文
+    query = f"台股 {symbol} 最新財經新聞分析" if symbol.isdigit() else f"US stock {symbol} latest financial news"
     try:
-        # 🌟 這裡保持不變，但等一下要在 requirements.txt 加東西
         search = DuckDuckGoSearchRun()
         results = search.run(query)
         return f"🔍 搜尋結果：\n{results}" if results else "近期無重大新聞。"
@@ -78,9 +84,8 @@ def get_financial_report(symbol: str) -> str:
     print(f"\n[Tool] 抓取財報: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     try:
-        time.sleep(1)
-        stock = yf.Ticker(ticker_str)
-        info = stock.info
+        # 🌟 改用快取中心拿資料 (瞬間完成！)
+        info = _get_stock_info(ticker_str)
         rev = info.get('totalRevenue', "無法取得")
         margins = info.get('profitMargins', "無法取得")
         return f"代碼: {ticker_str}, 總營收: {rev}, 淨利率: {margins}"
