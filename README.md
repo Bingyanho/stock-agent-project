@@ -25,8 +25,6 @@
 
 ## 🛠️ 系統架構圖 (Architecture)
 
-[在此可放入你的系統架構圖圖片，若無可將此行刪除]
-
 ### 系統層次：
 * **交互層 (Interaction)**: Streamlit / Web UI。
 * **邏輯層 (Reasoning)**: LangChain + Google Gemini 2.5 Flash（專注於低延遲與高效率的工具調度）。
