@@ -7,7 +7,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from agent import StockAnalysisSession
-import time
 
 app = FastAPI(
     title="智能財報分析 Agent API",
