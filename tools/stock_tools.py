@@ -12,21 +12,23 @@ def _get_valid_ticker(symbol: str) -> str:
 
 @tool
 def get_company_info(symbol: str) -> str:
-    """取得公司基本資料與產業類別"""
-    print(f"\n[Tool] 抓取基本資料: {symbol}", flush=True)
+    """取得公司正式名稱與產業類別"""
+    print(f"\n[Tool] 抓取公司資料: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     try:
-        time.sleep(random.uniform(1, 2))
-        # 🌟 根據 Log 建議：不設定 session，讓 yfinance 自己處理
+        time.sleep(1)
         stock = yf.Ticker(ticker_str)
         info = stock.info
-        name = info.get("longName", symbol)
-        sector = info.get("sector", "技術")
-        industry = info.get("industry", "半導體")
-        return f"公司名稱: {name}, 產業: {sector} - {industry}"
+        
+        # 🌟 這裡加上明確的標註，告訴 Agent 這是官方資料
+        official_name = info.get("longName", "未知")
+        short_name = info.get("shortName", "未知")
+        sector = info.get("sector", "未知")
+        
+        return f"【官方紀錄名稱】: {official_name} (簡稱: {short_name}), 產業: {sector}"
     except Exception as e:
-        print(f"❌ [錯誤 - 基本資料] {e}", flush=True)
-        return f"公司代碼: {symbol} (基本資料抓取受阻)"
+        return f"無法取得代碼 {symbol} 的正式名稱。"
+    
 
 @tool
 def get_stock_price(symbol: str) -> str:
