@@ -19,7 +19,7 @@ if "messages" not in st.session_state:
     # 阿財的開場白
     st.session_state.messages.append({
         "role": "assistant", 
-        "content": "你好！我是智能財報分析 Agent「阿財」📈\n\n請輸入你想查詢的**台灣股票代碼或名稱**（例如：`2330` 或 `聯電`），我會幫你抓取最新股價、財報與新聞，並進行綜合分析！"
+        "content": "你好！我是智能財報分析 Agent「阿財」📈\n\n請輸入你想查詢的**股票代碼或名稱**（例如：`2330` 或 `聯電`），我會幫你抓取最新股價、財報與新聞，並進行綜合分析！"
     })
 
 # 3. 側邊欄設定 (Sidebar)

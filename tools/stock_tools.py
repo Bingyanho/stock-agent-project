@@ -5,10 +5,20 @@ import time
 import random
 
 def _get_valid_ticker(symbol: str) -> str:
-    symbol = str(symbol).strip()
-    if symbol.endswith(".TW") or symbol.endswith(".TWO"):
+    """自動判斷台股或美股代碼"""
+    symbol = str(symbol).strip().upper() # 轉大寫，例如 aapl 變 AAPL
+    
+    # 如果已經有後綴了（如 .TW, .TWO, .US），就直接回傳
+    if "." in symbol:
         return symbol
-    return f"{symbol}.TW"
+    
+    # 如果全是數字，判定為台股，加上 .TW
+    if symbol.isdigit():
+        return f"{symbol}.TW"
+    
+    # 如果包含英文字母，判定為美股（或其他市場），直接回傳
+    # yfinance 預設美股不需後綴
+    return symbol
 
 @tool
 def get_company_info(symbol: str) -> str:
