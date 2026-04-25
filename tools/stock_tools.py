@@ -92,3 +92,33 @@ def get_financial_report(symbol: str) -> str:
     except Exception as e:
         print(f"❌ [錯誤 - 財報] {e}", flush=True)
         return "⚠️ 財報系統暫時無法讀取"
+    
+@tool
+def get_recent_momentum(symbol: str) -> str:
+    """取得公司近期的短期財務動能 (包含季營收成長率、季盈餘成長率與EPS)"""
+    print(f"\n[Tool] 抓取近期動能: {symbol}", flush=True)
+    ticker_str = _get_valid_ticker(symbol)
+    try:
+        # 🌟 再次受惠於 Cache 機制，這裡會瞬間完成，不用重新連線！
+        info = _get_stock_info(ticker_str)
+        
+        # 取得近期(季度)成長性指標
+        q_rev_growth = info.get('quarterlyRevenueGrowth')
+        q_earn_growth = info.get('earningsGrowth')
+        trailing_eps = info.get('trailingEps', '無法取得')
+
+        # 幫助小數點轉換為百分比，方便 AI 大腦閱讀
+        def fmt_pct(val):
+            if isinstance(val, (int, float)):
+                return f"{val * 100:.2f}%"
+            return "無資料"
+
+        return (
+            f"【{ticker_str} 短期財報動能】\n"
+            f"- 季營收成長率 (YoY): {fmt_pct(q_rev_growth)}\n"
+            f"- 季盈餘成長率 (YoY): {fmt_pct(q_earn_growth)}\n"
+            f"- 近四季累積 EPS: {trailing_eps}"
+        )
+    except Exception as e:
+        print(f"❌ [錯誤 - 近期動能] {e}", flush=True)
+        return "⚠️ 近期動能指標暫時無法取得"
