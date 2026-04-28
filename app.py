@@ -6,7 +6,7 @@ import uuid
 st.set_page_config(page_title="阿財 - 智能財報分析 Agent", page_icon="📈", layout="centered")
 
 # 設定 FastAPI 後端的網址
-API_URL = "https://stock-agent-api-1jsl.onrender.com"
+API_URL = "http://127.0.0.1:8000"
 
 # 2. 初始化 Session State (記憶體)
 # 給每個使用者一個獨一無二的 ID

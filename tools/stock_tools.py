@@ -3,6 +3,9 @@ from langchain_core.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
 import time
 from functools import lru_cache # 🌟 新增：引入快取模組
+from stock_quant import run_daily_strategy, DB_FILE
+import json
+import os
 
 def _get_valid_ticker(symbol: str) -> str:
     """自動判斷台股或美股代碼"""
@@ -26,6 +29,16 @@ def _get_stock_info(ticker_str: str):
     print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (有快取就不會重複出現)...", flush=True)
     time.sleep(1) # 溫柔地停頓一下，避免被鎖
     return yf.Ticker(ticker_str).info
+
+def load_account():
+    if not os.path.exists(DB_FILE):
+        return {"cash": 200000, "portfolio": [], "cooldowns": {}}
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_account(data):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 @tool
 def get_company_info(symbol: str) -> str:
@@ -67,13 +80,25 @@ def get_stock_price(symbol: str) -> str:
 def get_stock_news(symbol: str) -> str:
     """透過搜尋引擎取得最新新聞"""
     print(f"\n[Tool] 搜尋新聞: {symbol}", flush=True)
-    time.sleep(2)
+    time.sleep(2) # 避免被搜尋引擎封鎖
+    
     # 🌟 順手幫你優化：如果是美股，用英文搜尋比較準；台股維持中文
     query = f"台股 {symbol} 最新財經新聞分析" if symbol.isdigit() else f"US stock {symbol} latest financial news"
+    
     try:
         search = DuckDuckGoSearchRun()
         results = search.run(query)
-        return f"🔍 搜尋結果：\n{results}" if results else "近期無重大新聞。"
+        
+        if results:
+            # 👇 核心修改：設定最大字數限制 (這裡設為 1000 字)
+            max_chars = 1000
+            if len(results) > max_chars:
+                results = results[:max_chars] + "\n...(為節省記憶體，已截斷後續新聞內容)"
+            
+            return f"🔍 搜尋結果：\n{results}"
+        else:
+            return "近期無重大新聞。"
+            
     except Exception as e:
         print(f"❌ [錯誤 - 新聞搜尋] {e}", flush=True)
         return "⚠️ 新聞搜尋目前無法使用"
@@ -122,3 +147,88 @@ def get_recent_momentum(symbol: str) -> str:
     except Exception as e:
         print(f"❌ [錯誤 - 近期動能] {e}", flush=True)
         return "⚠️ 近期動能指標暫時無法取得"
+    
+@tool
+def get_quant_portfolio_status():
+    """
+    讀取目前的量化交易帳戶狀態，包含現金、持股明細、總資產與報酬率。
+    當使用者問『我現在賺多少？』或『我的持股狀況如何？』時使用。
+    """
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            account = json.load(f)
+        # 這裡可以加入一些簡單的計算逻辑，回傳易於 AI 閱讀的字串
+        return json.dumps(account, ensure_ascii=False)
+    except Exception as e:
+        return f"無法讀取帳戶資料: {e}"
+
+@tool
+def run_quant_analysis_engine():
+    """
+    執行量化掃描與交易策略邏輯。會產出今日的大盤訊號、買進指令、賣出指令與動能雷達。
+    當使用者要求『執行今天的分析』或『產出交易報告』時使用。
+    """
+    try:
+        # 執行你原本程式中的核心函式
+        account, equity, market_status, sell_msg, buy_msg, watchlist = run_daily_strategy()
+        
+        report_summary = {
+            "大盤環境": market_status,
+            "建議賣出": sell_msg,
+            "建議買進": buy_msg,
+            "總資產": f"{equity:,.0f}",
+            "動能觀察名單": watchlist[:5] # 只給前五名避免 token 太長
+        }
+        return json.dumps(report_summary, ensure_ascii=False)
+    except Exception as e:
+        return f"執行量化引擎時出錯: {e}"
+    
+@tool
+def modify_cash_balance(new_cash: float) -> str:
+    """
+    手動校正虛擬帳戶的可用現金餘額。
+    當使用者說「將帳戶現金修改為 XXX」、「幫我把現金設定成 XXX」時呼叫此工具。
+    """
+    try:
+        account = load_account()
+        old_cash = account.get('cash', 0)
+        account['cash'] = float(new_cash)
+        save_account(account)
+        return f"帳戶現金校正完成！原本餘額：{old_cash:,.0f} 元，更新後餘額：{new_cash:,.0f} 元。"
+    except Exception as e:
+        return f"修改現金失敗：{e}"
+
+@tool
+def correct_buy_position(ticker: str, real_price: float, real_shares: int) -> str:
+    """
+    同步真實買進價格與股數，用來校正帳戶內的持倉紀錄。
+    當使用者說「我實際買進 XXX，價格 YYY，股數 ZZZ，請幫我更新」時呼叫此工具。
+    傳入的 ticker 必須是完整的股票代號 (如 2330.TW)。
+    """
+    try:
+        ticker = str(ticker).upper()
+        if not (".TW" in ticker or ".TWO" in ticker): 
+            ticker += ".TW"
+
+        account = load_account()
+        found = False
+        for pos in account['portfolio']:
+            if pos['Ticker'] == ticker:
+                # 1. 把舊的預估扣款加回去
+                old_est_cost = pos['Shares'] * pos['Entry_Price']
+                account['cash'] += old_est_cost
+                # 2. 更新成真實數據
+                pos['Entry_Price'] = float(real_price)
+                pos['Shares'] = int(real_shares)
+                # 3. 扣除真實款項
+                account['cash'] -= (real_price * real_shares)
+                found = True
+                break
+                
+        if found:
+            save_account(account)
+            return f"買進對帳完成！【{ticker}】已修正為 {real_shares} 股 @ {real_price}元。目前庫存剩餘現金: {account['cash']:,.0f} 元。"
+        else:
+            return f"找不到 {ticker} 的持倉紀錄，請確認是否已在策略中成交。"
+    except Exception as e:
+        return f"修正持倉失敗：{e}"
