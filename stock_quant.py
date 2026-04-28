@@ -5,6 +5,9 @@ import json
 import os
 from datetime import datetime, timedelta
 import warnings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 warnings.filterwarnings('ignore')
 
@@ -12,7 +15,7 @@ warnings.filterwarnings('ignore')
 # 1. 系統與檔案設定
 # ==========================================
 # 🚨 請換成你全新的 webhook，絕對不要再公開貼出！
-DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1494712760561307701/im0h8bYIvarQn9UEgTqMAAVx0HfAdx0__ydmCAsHXjTp5GNhZoUEXViVUd7aaJQywMpt'
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
 
 DB_FILE = "trading_account.json"
 WATCHLIST_FILE = "watchlist.txt"
