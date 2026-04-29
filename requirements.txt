@@ -9,3 +9,4 @@ curl_cffi
 python-dotenv
 pandas
 requests
+matplotlib
