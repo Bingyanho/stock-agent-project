@@ -1,12 +1,17 @@
 import streamlit as st
 import requests
 import uuid
+import os
+import time
 
 # 1. 網頁基本設定
 st.set_page_config(page_title="阿財 - 智能財報分析 Agent", page_icon="📈", layout="centered")
 
-# 設定 FastAPI 後端的網址
-API_URL = "https://stock-agent-api-1jsl.onrender.com"
+# ⚠️【架構小提醒】
+# 如果你的後端伺服器 (FastAPI) 已經部署到 Render 上，而 Streamlit 是跑在你自己的電腦裡，
+# 你的電腦會「找不到」Render 伺服器上產生的圖片檔喔！
+# 如果要測試畫圖功能，建議先把它改回本地端： API_URL = "http://localhost:8000"
+API_URL = "http://localhost:8000"
 
 # 2. 初始化 Session State (記憶體)
 # 給每個使用者一個獨一無二的 ID
@@ -34,9 +39,23 @@ with st.sidebar:
             requests.delete(f"{API_URL}/session/{st.session_state.session_id}")
         except:
             pass
-        # 清除前端畫面
+        # 清除前端畫面與暫存圖片
         st.session_state.messages = []
+        if os.path.exists("portfolio_pie.png"):
+            os.remove("portfolio_pie.png")
         st.rerun()
+
+    st.markdown("---")
+    
+    # ✨ 新增：圖表顯示區塊 ✨
+    st.title("📊 資產配置圖")
+    if os.path.exists("portfolio_pie.png"):
+        # 💡 解法：將檔案以二進位 (rb) 模式讀取成 bytes，直接讓 Streamlit 渲染
+        with open("portfolio_pie.png", "rb") as f:
+            image_bytes = f.read()
+        st.image(image_bytes, use_container_width=True)
+    else:
+        st.info("目前尚無圖表。\n請對阿財說：「畫出我的持股圓餅圖」來生成！")
 
 # 4. 主畫面標題
 st.title("📈 智能財報與新聞分析 Agent")
@@ -48,7 +67,7 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # 6. 接收使用者輸入
-if prompt := st.chat_input("請輸入股票代碼 (例如: 2330)..."):
+if prompt := st.chat_input("請輸入股票代碼、指令或「畫圓餅圖」..."):
     
     # 把使用者的訊息加到畫面上
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -77,10 +96,13 @@ if prompt := st.chat_input("請輸入股票代碼 (例如: 2330)..."):
                     ai_reply = f"❌ 發生錯誤 (Status: {response.status_code}): {response.text}"
                     
             except requests.exceptions.ConnectionError:
-                ai_reply = "❌ 無法連線到後端伺服器！請確認你的 FastAPI (server.py) 已經啟動。"
+                ai_reply = "❌ 無法連線到後端伺服器！請確認你的 FastAPI 已經啟動。"
             except Exception as e:
                 ai_reply = f"❌ 系統發生預期外的錯誤: {str(e)}"
         
         # 顯示結果並存入記憶
         st.markdown(ai_reply)
         st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+        
+        # ✨ 重整畫面以更新側邊欄的圖片 ✨
+        st.rerun()

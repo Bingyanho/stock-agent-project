@@ -6,6 +6,10 @@ from functools import lru_cache # 🌟 新增：引入快取模組
 from stock_quant import run_daily_strategy, DB_FILE
 import json
 import os
+import matplotlib.pyplot as plt
+
+plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'PingFang HK', 'SimHei', 'Arial Unicode MS'] 
+plt.rcParams['axes.unicode_minus'] = False
 
 def _get_valid_ticker(symbol: str) -> str:
     """自動判斷台股或美股代碼"""
@@ -232,3 +236,100 @@ def correct_buy_position(ticker: str, real_price: float, real_shares: int) -> st
             return f"找不到 {ticker} 的持倉紀錄，請確認是否已在策略中成交。"
     except Exception as e:
         return f"修正持倉失敗：{e}"
+
+@tool
+def generate_portfolio_pie_chart() -> str:
+    """
+    繪製目前帳戶的資產現值分布圖（包含現金與各檔持股的即時市值比例）。
+    當使用者要求「畫圓餅圖」、「顯示資產比例」、「繪製持股分布」時呼叫此工具。
+    """
+    try:
+        # 1. 讀取帳戶資料
+        db_file = "trading_account.json"
+        if not os.path.exists(db_file):
+            return "錯誤：找不到帳戶資料檔。"
+        
+        with open(db_file, "r", encoding="utf-8") as f:
+            account = json.load(f)
+            
+        cash = account.get('cash', 0)
+        portfolio = account.get('portfolio', [])
+        
+        labels = []
+        sizes = []
+        
+        # 2. 加入可用現金
+        if cash > 0:
+            labels.append(f"現金\n{cash:,.0f} 元")
+            sizes.append(cash)
+            
+        # 3. 獲取當前股價並計算「即時市值」
+        for pos in portfolio:
+            ticker = pos.get('Ticker', '')
+            name = pos.get('Name', ticker)
+            shares = pos.get('Shares', 0)
+            
+            if shares > 0 and ticker:
+                # 抓取最新股價
+                try:
+                    stock = yf.Ticker(ticker)
+                    # 獲取最近一個交易日的收盤價
+                    current_price = stock.history(period="1d")['Close'].iloc[-1]
+                except Exception:
+                    # 如果網路異常抓不到，退回使用成本價作為保底方案
+                    current_price = pos.get('Entry_Price', 0)
+                    
+                current_value = shares * current_price  # 市值 = 股數 * 現價
+                
+                if current_value > 0:
+                    labels.append(f"{name}\n{current_value:,.0f} 元")
+                    sizes.append(current_value)
+                
+        if not sizes:
+            return "帳戶中目前沒有資產或現金可以繪製圖表。"
+            
+        # 4. 繪製現代感甜甜圈圖 (Donut Chart)
+        plt.figure(figsize=(10, 8)) # 稍微放大畫布比例
+        colors = plt.cm.Set3.colors # 換一組更清晰、對比度更好的配色
+        
+        # 設定每個區塊微微分開 (explode)
+        explode = [0.03] * len(sizes)
+        
+        wedges, texts, autotexts = plt.pie(
+            sizes, 
+            labels=labels, 
+            autopct='%1.1f%%', 
+            startangle=140, 
+            colors=colors, 
+            explode=explode,
+            pctdistance=0.82, # 調整百分比數字的位置
+            textprops={'fontsize': 13, 'fontweight': 'bold'} # 🔥 加大、加粗標籤字體
+        )
+        
+        # 讓百分比的數字更醒目
+        for autotext in autotexts:
+            autotext.set_fontsize(14)
+            autotext.set_color('darkred')
+            
+        # 畫中間的白圓，製造甜甜圈效果
+        centre_circle = plt.Circle((0,0), 0.65, fc='white')
+        fig = plt.gcf()
+        fig.gca().add_artist(centre_circle)
+        
+        # 在甜甜圈正中間加上「總資產」資訊
+        total_value = sum(sizes)
+        plt.text(0, 0, f"總資產現值\n{total_value:,.0f} 元", 
+                 ha='center', va='center', fontsize=18, fontweight='bold', color='dimgrey')
+            
+        plt.title('📊 投資組合即時現值分布', fontsize=20, fontweight='bold', pad=20)
+        plt.axis('equal') 
+        
+        # 5. 存檔為圖片
+        save_path = "portfolio_pie.png"
+        plt.savefig(save_path, bbox_inches='tight', dpi=300) # dpi=300 讓畫質變超清晰
+        plt.close() 
+        
+        return f"✅ 資產現值圖表已成功生成 (已連線抓取最新股價計算)，並儲存為 `{save_path}`。"
+        
+    except Exception as e:
+        return f"繪製圖表失敗：{e}"
