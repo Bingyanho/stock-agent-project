@@ -312,11 +312,11 @@ def manual_sell_stock(ticker: str, price: float, shares: int) -> str:
         if pos.shares < shares:
             return f"⚠️ 庫存股數不足！您目前只有 {pos.shares} 股 {ticker}。"
 
-        # 1. 計算賣出價值、手續費(0.1425%) 與 證券交易稅(0.6%)
+        # 1. 計算賣出價值、手續費(0.1425%) 與 證券交易稅(0.3%)
         base_value = price * shares
         fee = int(base_value * 0.001425)
         fee = 20 if fee < 20 else fee
-        tax = int(base_value * 0.006)
+        tax = int(base_value * 0.003)
         
         # 2. 實際拿回的錢 = 賣出總值 - 手續費 - 交易稅
         net_value = base_value - fee - tax
