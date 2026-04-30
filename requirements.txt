@@ -12,3 +12,6 @@ sqlalchemy
 matplotlib
 requests
 python-dotenv
+psycopg2-binary
+langchain-community
+duckduckgo-search
