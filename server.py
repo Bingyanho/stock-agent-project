@@ -8,6 +8,7 @@ from typing import Optional
 
 # 第三方套件
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import matplotlib.patheffects as path_effects
 import jwt
 from fastapi import FastAPI, HTTPException, Depends, Query, status
