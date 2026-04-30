@@ -42,25 +42,25 @@ def get_stock_price(symbol: str) -> str:
     """取得當前股價數據"""
     print(f"\n[Tool] 抓取股價: {symbol}", flush=True)
     
-    # 保留你原本的股票代號轉換邏輯
+    # ✨ 防護 1：強制煞車 2 秒。避免同一秒內發送大量請求導致 Too Many Requests
+    time.sleep(2)
+    
     ticker_str = _get_valid_ticker(symbol) 
     
     try:
-        # ✨ 關鍵修改：直接呼叫 Ticker，什麼 session 都不用加，讓 yfinance 自動處理防護
         stock = yf.Ticker(ticker_str)
-        info = stock.info
         
-        price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
-        prev = info.get('previousClose', '無法取得')
+        # ✨ 防護 2：完全捨棄 .info，直接用 .history 抓近 5 天的 K 線資料
+        hist = stock.history(period="5d")
         
-        # 終極備用方案：如果 Yahoo 把 info() 擋死，改用 history() 抓歷史 K 線的最新價
-        if price == '無法取得' or prev == '無法取得':
-            hist = stock.history(period="2d")
-            if not hist.empty:
-                price = round(hist['Close'].iloc[-1], 2)
-                if len(hist) > 1:
-                    prev = round(hist['Close'].iloc[-2], 2)
-                    
+        # 檢查是否有抓到資料
+        if hist.empty or len(hist) < 2:
+            return "⚠️ 股價暫時無法取得 (無資料或被限制)"
+            
+        # 從 K 線資料中取出最新價與昨收價
+        price = round(hist['Close'].iloc[-1], 2)
+        prev = round(hist['Close'].iloc[-2], 2)
+                
         return f"目前股價: {price}, 昨收價: {prev}"
         
     except Exception as e:
