@@ -127,32 +127,35 @@ def analyze(req: AnalyzeRequest):
 def get_portfolio_pie_chart(token: str = Query(...)):
     db = SessionLocal()
     try:
-        # 1. 驗證 Token 並取得 user_id
+        # 1. 驗證 Token (確認是合法使用者)
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id")
         
-        # 2. 從資料庫讀取該使用者的現金與持股
+        # 從資料庫讀取該使用者的現金與持股
         user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="找不到使用者")
-            
         portfolios = db.query(Portfolio).filter(Portfolio.user_id == user_id).all()
         
-        # 準備繪圖數據
+        # 準備畫圖資料
         labels = [p.name for p in portfolios]
-        # 估算現值：股數 * 買入單價 (之後可串接 get_stock_price 取得更準確的現值)
         sizes = [p.shares * p.entry_price for p in portfolios] 
         
-        if user.cash > 0:
+        if user and user.cash > 0:
             labels.append("現金")
             sizes.append(user.cash)
 
-        # 3. 開始繪圖設定
-        # 設定支援中文字體 (根據作業系統自動切換)
-        plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'PingFang HK', 'SimHei', 'Arial Unicode MS'] 
+        # 2. ✨ 關鍵修改：動態載入雲端的中文字體檔
+        font_path = "NotoSansTC-Regular.ttf"
+        if os.path.exists(font_path):
+            fm.fontManager.addfont(font_path)
+            prop = fm.FontProperties(fname=font_path)
+            plt.rcParams['font.family'] = prop.get_name() # 強制使用我們指定的字體
+        else:
+            print("⚠️ 找不到 NotoSansTC-Regular.ttf，請確認檔案是否有上傳！")
+            plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei', 'PingFang HK', 'SimHei', 'Arial Unicode MS']
+            
         plt.rcParams['axes.unicode_minus'] = False
         
-        # 建立畫布，設定為透明背景以配合前端主題
+        # 3. 開始繪圖設定
         fig, ax = plt.subplots(figsize=(10, 8))
         fig.patch.set_alpha(0) # 背景透明
         
@@ -160,36 +163,29 @@ def get_portfolio_pie_chart(token: str = Query(...)):
             ax.text(0.5, 0.5, "帳戶目前尚無資產", ha='center', va='center', fontsize=20, color='gray')
             ax.axis('off')
         else:
-            # 顏色組合
             colors = plt.cm.Set3.colors
-            explode = [0.03] * len(sizes) # 每一塊都稍微撐開，增加層次感
+            explode = [0.03] * len(sizes)
             
-            # 繪製圓餅圖
             wedges, texts, autotexts = ax.pie(
                 sizes, labels=labels, autopct='%1.1f%%', startangle=140, 
                 colors=colors, explode=explode, pctdistance=0.82,
-                textprops={'fontsize': 20, 'fontweight': 'bold'}
+                textprops={'fontsize': 14, 'fontweight': 'bold'}
             )
             
-            # ✨ 關鍵優化：建立「白色描邊」效果物件，解決深色背景看不清文字的問題
-            # linewidth=3 表示描邊粗細，foreground="white" 為描邊顏色
+            # 白色描邊效果 (避免深色背景看不見文字)
             text_glow = [path_effects.withStroke(linewidth=3, foreground="white")]
 
-            # 套用描邊效果到外部標籤 (如: 台積電)
             for t in texts:
-                t.set_color('black') # 字體主色
+                t.set_color('black')
                 t.set_path_effects(text_glow)
 
-            # 套用描邊效果到內部百分比 (如: 19.5%)
             for autotext in autotexts:
-                autotext.set_color('darkred') # 內部字體用深紅色較為醒目
+                autotext.set_color('darkred')
                 autotext.set_path_effects(text_glow)
                 
-            # 繪製中間的圓圈，製造「甜甜圈圖」效果，看起來更現代
             centre_circle = plt.Circle((0,0), 0.65, fc='white')
             ax.add_artist(centre_circle)
             
-            # 在圓圈中心顯示總資產數字
             total_val = sum(sizes)
             total_text = ax.text(
                 0, 0, f"總資產估值\n{total_val:,.0f} 元", 
@@ -197,21 +193,19 @@ def get_portfolio_pie_chart(token: str = Query(...)):
             )
             total_text.set_path_effects(text_glow)
 
-        # 4. 將圖片寫入記憶體緩衝區 (不存成檔案，直接回傳給網頁)
+        # 4. 回傳圖片
         img_buffer = io.BytesIO()
         plt.savefig(img_buffer, format='png', bbox_inches='tight', transparent=True, dpi=120)
         img_buffer.seek(0)
-        plt.close(fig) # 務必關閉畫布釋放記憶體
+        plt.close(fig) 
         
         return StreamingResponse(img_buffer, media_type="image/png")
         
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="登入已過期")
     except Exception as e:
-        print(f"❌ 圓餅圖生成錯誤: {e}")
-        raise HTTPException(status_code=500, detail="無法生成資產分布圖")
+        print(f"❌ 畫圖失敗: {e}")
+        raise HTTPException(status_code=500, detail="生成圓餅圖時發生內部錯誤")
     finally:
-        db.close()  
+        db.close()
 
 # ==========================================
 # 啟動伺服器
