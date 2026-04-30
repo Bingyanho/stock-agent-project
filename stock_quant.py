@@ -1,28 +1,24 @@
 import yfinance as yf
 import pandas as pd
-import requests
-import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import warnings
 from dotenv import load_dotenv
 
-load_dotenv()
+# 匯入資料庫模組
+from database import SessionLocal, User, Portfolio
 
+load_dotenv()
 warnings.filterwarnings('ignore')
 
 # ==========================================
 # 1. 系統與檔案設定
 # ==========================================
-# 🚨 請換成你全新的 webhook，絕對不要再公開貼出！
-DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
-
-DB_FILE = "trading_account.json"
 WATCHLIST_FILE = "watchlist.txt"
 
 INITIAL_CAPITAL = 200000
 MAX_POSITIONS = 5
-MIN_BUDGET_THRESHOLD = 10000 # 【新增】：單檔最低購買金額門檻 (低於1萬不買，避免手續費不划算)
+MIN_BUDGET_THRESHOLD = 10000 # 單檔最低購買金額門檻 
 BENCHMARK = "0050.TW"
 
 # 策略參數
@@ -31,7 +27,6 @@ EXIT_BUFFER = 0.99           # 趨勢破壞緩衝
 STOP_LOSS_BUFFER = 0.92      # 硬性停損 (跌幅 8%)
 TRAILING_STOP_BUFFER = 0.90  # 移動停利 (高點回落 10%)
 MIN_HOLD_DAYS = 7
-COOLDOWN_DAYS = 3
 TARGET_WATCHLIST_SIZE = 20
 MIN_MOMENTUM_THRESHOLD = 0.05
 
@@ -61,34 +56,29 @@ def get_name(ticker):
     return STOCK_NAMES.get(ticker, ticker)
 
 # ==========================================
-# 2. 動態名單與資料庫管理
+# 2. 動態名單管理
 # ==========================================
 def update_dynamic_watchlist():
     print(f"啟動全市場掃描：正在分析 {len(SCAN_UNIVERSE)} 檔潛力股...")
-
     raw = yf.download(SCAN_UNIVERSE, period="4mo", auto_adjust=True, progress=False)
 
     if raw.empty or "Close" not in raw:
         raise RuntimeError("無法取得掃描池資料，請檢查網路或 yfinance 資料源。")
 
     close_df = raw["Close"].ffill().dropna(how="all")
-
     candidates = []
-    for t in SCAN_UNIVERSE:
-        if t not in close_df.columns:
-            continue
 
+    for t in SCAN_UNIVERSE:
+        if t not in close_df.columns: continue
         c = close_df[t].dropna()
-        if len(c) < 60:
-            continue
+        if len(c) < 60: continue
 
         last_close = float(c.iloc[-1])
         ma20 = float(c.rolling(20).mean().iloc[-1])
         ma60 = float(c.rolling(60).mean().iloc[-1])
         momentum = float(c.pct_change(MOMENTUM_DAYS).iloc[-1])
 
-        if pd.isna(ma20) or pd.isna(ma60) or pd.isna(momentum):
-            continue
+        if pd.isna(ma20) or pd.isna(ma60) or pd.isna(momentum): continue
 
         if last_close > ma20 and ma20 > ma60 and momentum > 0:
             candidates.append({"Ticker": t, "Momentum": momentum})
@@ -98,39 +88,22 @@ def update_dynamic_watchlist():
 
     with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
         f.write(f"# 機器人自動掃描更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write("# 選股邏輯: 收盤 > 20MA > 60MA，依 10 日動能排序前 20 名\n")
         f.write("\n".join(top_stocks))
 
-    print(f"掃描完成！已將目前最強的 {len(top_stocks)} 檔股票更新至 {WATCHLIST_FILE}")
     return top_stocks
-
-def load_account():
-    if not os.path.exists(DB_FILE):
-        return {"cash": INITIAL_CAPITAL, "portfolio": [], "cooldowns": {}}
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        account = json.load(f)
-        if "cooldowns" not in account:
-            account["cooldowns"] = {}
-        return account
-
-def save_account(account_data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(account_data, f, indent=4, ensure_ascii=False)
 
 # ==========================================
 # 3. 數據引擎與指標計算
 # ==========================================
 def get_market_signals(tickers):
-    print("正在下載觀察名單與大盤數據...")
     all_tickers = list(dict.fromkeys(tickers + [BENCHMARK]))
-
     raw = yf.download(all_tickers, period="2y", auto_adjust=True, progress=False)
+    
     if raw.empty or "Close" not in raw:
-        raise RuntimeError("無法取得市場資料，請檢查網路或 yfinance 資料源。")
+        raise RuntimeError("無法取得市場資料。")
 
     close_df = raw["Close"].ffill().dropna(how="all")
     signals = {}
-
     market_ok = False
     market_status = "🔴 大盤資料不足，暫停交易"
 
@@ -141,301 +114,188 @@ def get_market_signals(tickers):
             if not pd.isna(bench_ma200.iloc[-1]):
                 market_ok = float(bench_close.iloc[-1]) > float(bench_ma200.iloc[-1])
                 market_status = "🟢 多頭 (大盤 > 年線)" if market_ok else "🔴 空頭 (大盤 < 年線，強制空手)"
-        else:
-            market_status = "🔴 大盤資料不足 200 日，暫停交易"
 
     for t in tickers:
-        if t not in close_df.columns:
-            continue
-
+        if t not in close_df.columns: continue
         c = close_df[t].dropna()
-        if len(c) < 60:
-            continue
-
-        ma5 = c.rolling(5).mean().iloc[-1]
-        ma20 = c.rolling(20).mean().iloc[-1]
-        ma60 = c.rolling(60).mean().iloc[-1]
-        momentum = c.pct_change(MOMENTUM_DAYS).iloc[-1]
-
-        if pd.isna(ma20) or pd.isna(ma60) or pd.isna(momentum):
-            continue
+        if len(c) < 60: continue
 
         signals[t] = {
             "Close": float(c.iloc[-1]),
-            "MA5": float(ma5),
-            "MA20": float(ma20),
-            "MA60": float(ma60),
-            "Momentum": float(momentum)
+            "MA5": float(c.rolling(5).mean().iloc[-1]),
+            "MA20": float(c.rolling(20).mean().iloc[-1]),
+            "MA60": float(c.rolling(60).mean().iloc[-1]),
+            "Momentum": float(c.pct_change(MOMENTUM_DAYS).iloc[-1])
         }
 
     return market_ok, market_status, signals
 
 # ==========================================
-# 4. 核心交易邏輯
+# 4. 核心交易邏輯 (接入 SQLite)
 # ==========================================
-def run_daily_strategy():
-    watchlist = update_dynamic_watchlist()
-    account = load_account()
+def run_daily_strategy(user_id: int = 1):
+    """
+    量化策略核心，接收 user_id 對特定使用者的資料庫進行買賣操作
+    """
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ValueError(f"找不到 ID 為 {user_id} 的使用者")
 
-    cash = account["cash"]
-    portfolio = account["portfolio"]
-    cooldowns = account["cooldowns"]
+        cash = user.cash
+        # 從資料庫抓出該名使用者的所有持股
+        portfolios = db.query(Portfolio).filter(Portfolio.user_id == user_id).all()
 
-    today = datetime.today()
-    today_str = today.strftime("%Y-%m-%d")
-
-    market_ok, market_status, signals = get_market_signals(watchlist)
-    sell_msg, buy_msg = "", ""
-
-    # 清理過期冷卻名單
-    cooldowns = {
-        t: date for t, date in cooldowns.items()
-        if datetime.strptime(date, "%Y-%m-%d") + timedelta(days=COOLDOWN_DAYS) > today
-    }
-
-    # --- [階段 A] 賣出邏輯 ---
-    new_portfolio = []
-    for pos in portfolio:
-        t = pos["Ticker"]
-        if t not in signals:
-            new_portfolio.append(pos)
-            continue
-
-        price = signals[t]["Close"]
-        m5 = signals[t]["MA5"]
-        m20 = signals[t]["MA20"]
+        watchlist = update_dynamic_watchlist()
+        market_ok, market_status, signals = get_market_signals(watchlist)
         
-        entry_price = pos["Entry_Price"]
-        peak_price = max(pos.get("Peak_Price", entry_price), price)
-        pos["Peak_Price"] = round(peak_price, 2)
-        
-        held_days = abs((today - datetime.strptime(pos["Entry_Date"], "%Y-%m-%d")).days)
+        sell_msg, buy_msg = "", ""
+        today = datetime.today()
+        today_str = today.strftime("%Y-%m-%d")
 
-        # 保命條款 (無視持有天數，隨時觸發)
-        market_exit = (not market_ok) and (price < m20)
-        hard_stop = (price < entry_price * STOP_LOSS_BUFFER)
-        trailing_stop = (price < peak_price * TRAILING_STOP_BUFFER)
+        # --- [階段 A] 賣出邏輯 ---
+        for pos in portfolios:
+            t = pos.ticker
+            if t not in signals: continue
 
-        # 趨勢條款 (加上 held_days >= MIN_HOLD_DAYS 的限制，給予 5 天保護)
-        trend_exit = (price < m20 * EXIT_BUFFER) and (held_days >= MIN_HOLD_DAYS)
-        momentum_decay = (price < m5) and (price < entry_price * 1.05) and (held_days >= MIN_HOLD_DAYS)
+            price = signals[t]["Close"]
+            m5 = signals[t]["MA5"]
+            m20 = signals[t]["MA20"]
+            
+            entry_price = pos.entry_price
+            peak_price = max(pos.peak_price if pos.peak_price else entry_price, price)
+            
+            # 若無 entry_date，預設當天買的以防止報錯
+            entry_date = datetime.strptime(pos.entry_date, "%Y-%m-%d") if pos.entry_date else today
+            held_days = abs((today - entry_date).days)
 
-        if market_exit or trend_exit or hard_stop or trailing_stop or momentum_decay:
-            gross_value = pos["Shares"] * price
-            sell_fee = max(MIN_FEE, int(gross_value * FEE_RATE * FEE_DISCOUNT))
-            sell_tax = int(gross_value * TAX_RATE)
-            net_value = gross_value - sell_fee - sell_tax
-            cash += net_value
+            market_exit = (not market_ok) and (price < m20)
+            hard_stop = (price < entry_price * STOP_LOSS_BUFFER)
+            trailing_stop = (price < peak_price * TRAILING_STOP_BUFFER)
+            trend_exit = (price < m20 * EXIT_BUFFER) and (held_days >= MIN_HOLD_DAYS)
+            momentum_decay = (price < m5) and (price < entry_price * 1.05) and (held_days >= MIN_HOLD_DAYS)
 
-            cost_basis = (entry_price * pos["Shares"]) + pos.get("Buy_Fee", 0)
-            profit_pct = ((net_value - cost_basis) / cost_basis) * 100 if cost_basis > 0 else 0
-
-            if market_exit:
-                reason = "🔴 大盤轉空強制清倉"
-            elif hard_stop:
-                reason = "🛑 觸發硬性停損 (跌破買價 8%)"
-            elif trailing_stop:
-                reason = "📉 觸發移動停利 (高點回落 10%)"
-            elif momentum_decay:
-                reason = "⏳ 動能衰退 (跌破5MA且獲利未拉開)"
-            else:
-                reason = "⚠️ 趨勢破壞 (跌破 20MA)"
-
-            sell_msg += (
-                f"{reason} 【{get_name(t)} ({t})】: 預計賣出 {pos['Shares']} 股 | "
-                f"參考價: {price:.2f} | 預估報酬: {profit_pct:.2f}%\n"
-            )
-
-            cooldowns[t] = today_str
-        else:
-            new_portfolio.append(pos)
-
-    portfolio = new_portfolio
-
-    # --- [階段 B] 買進邏輯 (全新：依照空位平分現金) ---
-    empty_slots = MAX_POSITIONS - len(portfolio)
-
-    if market_ok and empty_slots > 0:
-        budget_per_stock = cash / empty_slots
-
-        # 檢查平分後的預算是否有達到最低消費門檻
-        if budget_per_stock >= MIN_BUDGET_THRESHOLD:
-            held_tickers = [p["Ticker"] for p in portfolio]
-            candidates = []
-
-            # 篩選符合條件的候選股
-            for t, s in signals.items():
-                if t in held_tickers or t in cooldowns:
-                    continue
-                if s["Close"] > s["MA20"] and s["MA20"] > s["MA60"] and s["Momentum"] > MIN_MOMENTUM_THRESHOLD:
-                    candidates.append({
-                        "Ticker": t,
-                        "Price": s["Close"],
-                        "Momentum": s["Momentum"]
-                    })
-
-            # 依照動能排序，優先買最強的
-            candidates.sort(key=lambda x: x["Momentum"], reverse=True)
-
-            for b in candidates[:empty_slots]:
-                if empty_slots <= 0:
-                    break
-                    
-                price = b["Price"]
-                # 粗估可買股數 (預留 0.2% 作為手續費緩衝)
-                shares = int((budget_per_stock * 0.998) // price)
+            if market_exit or trend_exit or hard_stop or trailing_stop or momentum_decay:
+                gross_value = pos.shares * price
+                sell_fee = max(MIN_FEE, int(gross_value * FEE_RATE * FEE_DISCOUNT))
+                sell_tax = int(gross_value * TAX_RATE)
+                net_value = gross_value - sell_fee - sell_tax
                 
-                # 防呆機制：如果加了手續費超過現金，就減少 1 股直到夠買
-                while shares > 0:
+                cash += net_value # 現金變多
+                
+                cost_basis = (entry_price * pos.shares) + (pos.buy_fee or 0)
+                profit_pct = ((net_value - cost_basis) / cost_basis) * 100 if cost_basis > 0 else 0
+
+                if market_exit: reason = "🔴 大盤轉空強制清倉"
+                elif hard_stop: reason = "🛑 觸發硬性停損"
+                elif trailing_stop: reason = "📉 觸發移動停利"
+                elif momentum_decay: reason = "⏳ 動能衰退"
+                else: reason = "⚠️ 趨勢破壞"
+
+                sell_msg += f"{reason} 【{get_name(t)} ({t})】: 賣出 {pos.shares} 股 | 報酬: {profit_pct:.2f}%\n"
+                
+                # 從資料庫中刪除這筆持股
+                db.delete(pos)
+            else:
+                # 沒賣出，更新資料庫的歷史最高價
+                pos.peak_price = round(peak_price, 2)
+
+        # 提交賣出結果到資料庫，騰出空位
+        db.commit()
+
+        # --- [階段 B] 買進邏輯 ---
+        # 重新查詢目前持股數
+        current_portfolios = db.query(Portfolio).filter(Portfolio.user_id == user_id).all()
+        empty_slots = MAX_POSITIONS - len(current_portfolios)
+
+        if market_ok and empty_slots > 0:
+            budget_per_stock = cash / empty_slots
+
+            if budget_per_stock >= MIN_BUDGET_THRESHOLD:
+                held_tickers = [p.ticker for p in current_portfolios]
+                candidates = []
+
+                for t, s in signals.items():
+                    if t in held_tickers: continue
+                    if s["Close"] > s["MA20"] > s["MA60"] and s["Momentum"] > MIN_MOMENTUM_THRESHOLD:
+                        candidates.append({"Ticker": t, "Price": s["Close"], "Momentum": s["Momentum"]})
+
+                candidates.sort(key=lambda x: x["Momentum"], reverse=True)
+
+                for b in candidates[:empty_slots]:
+                    if empty_slots <= 0: break
+                        
+                    price = b["Price"]
+                    shares = int((budget_per_stock * 0.998) // price)
+                    
+                    while shares > 0:
+                        gross_cost = shares * price
+                        buy_fee = max(MIN_FEE, int(gross_cost * FEE_RATE * FEE_DISCOUNT))
+                        total_cost = gross_cost + buy_fee
+                        if cash >= total_cost: break
+                        shares -= 1
+
+                    if shares < 1: continue
+
                     gross_cost = shares * price
                     buy_fee = max(MIN_FEE, int(gross_cost * FEE_RATE * FEE_DISCOUNT))
                     total_cost = gross_cost + buy_fee
-                    if cash >= total_cost:
-                        break
-                    shares -= 1
 
-                if shares < 1:
-                    continue
+                    cash -= total_cost
+                    empty_slots -= 1
+                    
+                    # 建立新持股並加入資料庫
+                    new_pos = Portfolio(
+                        user_id=user_id,
+                        ticker=b["Ticker"],
+                        name=get_name(b["Ticker"]),
+                        shares=shares,
+                        entry_price=round(price, 2),
+                        peak_price=round(price, 2),
+                        buy_fee=buy_fee,
+                        entry_date=today_str
+                    )
+                    db.add(new_pos)
+                    
+                    buy_msg += f"🎯 強勢買進 【{get_name(b['Ticker'])} ({b['Ticker']})】: 買進 {shares} 股 | 參考價: {price:.2f}\n"
+            else:
+                buy_msg += f"⚠️ 預算不足單檔門檻 ({MIN_BUDGET_THRESHOLD} 元)，暫緩買進。\n"
 
-                # 確定購買數量後，進行現金扣款與更新持股
-                gross_cost = shares * price
-                buy_fee = max(MIN_FEE, int(gross_cost * FEE_RATE * FEE_DISCOUNT))
-                total_cost = gross_cost + buy_fee
+        if not sell_msg: sell_msg = "✅ 目前無賣出訊號，安心抱牢。"
+        if not buy_msg: buy_msg = "⚠️ 今日無符合條件個股，或已滿倉/大盤弱。"
 
-                cash -= total_cost
-                empty_slots -= 1
-                portfolio.append({
-                    "Ticker": b["Ticker"],
-                    "Name": get_name(b["Ticker"]),
-                    "Shares": shares,
-                    "Entry_Price": round(price, 2),
-                    "Peak_Price": round(price, 2),
-                    "Buy_Fee": buy_fee,
-                    "Entry_Date": today_str
-                })
-                buy_msg += (
-                    f"🎯 強勢買進 【{get_name(b['Ticker'])} ({b['Ticker']})】: "
-                    f"預計買進 {shares} 股 | 參考價: {price:.2f} | "
-                    f"動能: {b['Momentum']*100:.1f}%\n"
-                )
-        else:
-            # 錢太少，觸發省手續費機制
-            buy_msg += f"⚠️ 剩餘資金 {cash:,.0f} 元，分攤給 {empty_slots} 個空位後單檔預算為 {budget_per_stock:,.0f} 元，不及最低門檻 ({MIN_BUDGET_THRESHOLD} 元)，為節省手續費暫緩買進。\n"
+        # 結算與更新現金
+        user.cash = cash
+        db.commit()
 
-    # --- 整理推播訊息與資產總結 ---
-    if not sell_msg:
-        sell_msg = "✅ 目前無賣出訊號，安心抱牢。"
-    if not buy_msg:
-        buy_msg = "⚠️ 今日無符合條件個股，或已達滿倉/大盤轉弱。"
+        # 重新計算最終總資產
+        final_portfolios = db.query(Portfolio).filter(Portfolio.user_id == user_id).all()
+        stock_value = 0
+        for p in final_portfolios:
+            if p.ticker in signals:
+                price = signals[p.ticker]["Close"]
+                gross_val = p.shares * price
+                est_sell_fee = max(MIN_FEE, int(gross_val * FEE_RATE * FEE_DISCOUNT))
+                est_sell_tax = int(gross_val * TAX_RATE)
+                stock_value += (gross_val - est_sell_fee - est_sell_tax)
+                
+        current_equity = cash + stock_value
 
-    # 重新計算總資產 (今日最終結算：以預估清算價值計算)
-    stock_value = 0
-    for p in portfolio:
-        if p["Ticker"] in signals:
-            price = signals[p["Ticker"]]["Close"]
-            gross_val = p["Shares"] * price
-            est_sell_fee = max(MIN_FEE, int(gross_val * FEE_RATE * FEE_DISCOUNT))
-            est_sell_tax = int(gross_val * TAX_RATE)
-            stock_value += (gross_val - est_sell_fee - est_sell_tax)
-            
-    current_equity = cash + stock_value
+        return None, current_equity, market_status, sell_msg, buy_msg, watchlist
 
-    account.update({
-        "cash": cash,
-        "portfolio": portfolio,
-        "cooldowns": cooldowns
-    })
-    save_account(account)
-
-    return account, current_equity, market_status, sell_msg, buy_msg, watchlist
-
-# ==========================================
-# 5. Discord 推播
-# ==========================================
-def send_discord_msg(account, current_equity, market_status, sell_msg, buy_msg, watchlist):
-    portfolio = account["portfolio"]
-    cash = account["cash"]
-
-    if portfolio:
-        display_portfolio = [{k: v for k, v in p.items() if k != "Buy_Fee"} for p in portfolio]
-        df = pd.DataFrame(display_portfolio)
-        table_text = df.to_string(index=False)
-        if len(table_text) > 1000:
-            table_text = table_text[:1000] + "\n...（已截斷）"
-        table_str = f"```text\n{table_text}\n```"
-    else:
-        table_str = "```text\n目前空手，資金安全避險中。\n```"
-
-    wl_str = ", ".join([t.replace(".TW", "").replace(".TWO", "") for t in watchlist])
-    if len(wl_str) > 1000:
-        wl_str = wl_str[:1000] + "..."
-
-    return_rate = ((current_equity - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100
-    color = 65280 if return_rate >= 0 else 16711680
-
-    embed = {
-        "title": "📈 量化分析：實戰操盤指令",
-        "description": (
-            f"**今日大盤環境：** {market_status}\n"
-            f"請依照以下訊號，於 **09:00 開盤時** 執行動作。"
-        ),
-        "color": color,
-        "fields": [
-            {
-                "name": "📤 今日賣出指令",
-                "value": sell_msg[:1024],
-                "inline": False
-            },
-            {
-                "name": "📥 今日買進指令",
-                "value": buy_msg[:1024],
-                "inline": False
-            },
-            {
-                "name": "📊 目前持股",
-                "value": table_str[:1024],
-                "inline": False
-            },
-            {
-                "name": "🔎 今日 AI 動能雷達",
-                "value": wl_str[:1024] if wl_str else "今日無符合條件股票（市場極弱）",
-                "inline": False
-            },
-            {
-                "name": "💰 帳戶摘要",
-                "value": (
-                    f"現金：{cash:,.0f}\n"
-                    f"總資產：{current_equity:,.0f}\n"
-                    f"報酬率：{return_rate:.2f}%\n"
-                    f"持股數：{len(portfolio)}"
-                ),
-                "inline": False
-            }
-        ],
-        "footer": {
-            "text": f"更新時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        }
-    }
-
-    payload = {"embeds": [embed]}
-
-    try:
-        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=15)
-        resp.raise_for_status()
-        print("Discord 訊息已送出")
     except Exception as e:
-        print(f"Discord 發送失敗：{e}")
+        db.rollback()
+        raise e
+    finally:
+        db.close()
 
-# ==========================================
-# 6. 主程式入口
-# ==========================================
+# 終端機測試專用
 if __name__ == "__main__":
-    if not DISCORD_WEBHOOK_URL or "YOUR_WEBHOOK_URL_HERE" in DISCORD_WEBHOOK_URL:
-        print("❌ 請先填入 Discord Webhook URL")
-    else:
-        try:
-            account, current_equity, market_status, sell_msg, buy_msg, watchlist = run_daily_strategy()
-            send_discord_msg(account, current_equity, market_status, sell_msg, buy_msg, watchlist)
-            print("今日策略執行完成")
-        except Exception as e:
-            print(f"程式錯誤：{e}")
+    print("啟動量化策略 (測試模式 User ID: 1)")
+    _, eq, ms, sm, bm, wl = run_daily_strategy(user_id=1)
+    print("\n--- 執行結果 ---")
+    print(f"總資產: {eq:,.0f}")
+    print(f"大盤狀態: {ms}")
+    print(f"賣出訊息:\n{sm}")
+    print(f"買進訊息:\n{bm}")
