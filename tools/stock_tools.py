@@ -6,7 +6,6 @@ from functools import lru_cache
 import json
 import os
 import inspect
-import requests
 
 # 引入資料庫模組
 from database import SessionLocal, User, Portfolio
@@ -47,22 +46,14 @@ def get_stock_price(symbol: str) -> str:
     ticker_str = _get_valid_ticker(symbol) 
     
     try:
-        # 1. 建立偽裝成正常瀏覽器的 Session
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7"
-        })
-        
-        # 2. 將 session 傳入 yf.Ticker (不再使用 _get_stock_info，避免它裡面沒裝 Session)
-        stock = yf.Ticker(ticker_str, session=session)
+        # ✨ 關鍵修改：直接呼叫 Ticker，什麼 session 都不用加，讓 yfinance 自動處理防護
+        stock = yf.Ticker(ticker_str)
         info = stock.info
         
         price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
         prev = info.get('previousClose', '無法取得')
         
-        # 3. 終極備用方案：如果 Yahoo 把 info() 擋死，改用 history() 抓歷史 K 線的最新價 (這招最穩)
+        # 終極備用方案：如果 Yahoo 把 info() 擋死，改用 history() 抓歷史 K 線的最新價
         if price == '無法取得' or prev == '無法取得':
             hist = stock.history(period="2d")
             if not hist.empty:
@@ -73,7 +64,6 @@ def get_stock_price(symbol: str) -> str:
         return f"目前股價: {price}, 昨收價: {prev}"
         
     except Exception as e:
-        # 在後端日誌印出真實錯誤，方便未來 Debug，但不把錯誤噴給使用者
         print(f"⚠️ {ticker_str} 股價抓取錯誤: {e}", flush=True) 
         return "⚠️ 股價暫時無法取得"
 
