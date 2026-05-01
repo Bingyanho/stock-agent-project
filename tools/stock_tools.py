@@ -19,114 +19,123 @@ def _get_valid_ticker(symbol: str) -> str:
 
 @lru_cache(maxsize=10)
 def _get_stock_info(ticker_str: str):
-    """集中處理 info 請求，帶有快取與防擋煞車"""
-    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (快取運作中)...", flush=True)
-    time.sleep(1.5) 
-    return yf.Ticker(ticker_str).info
+    """
+    強健式資料中心：
+    1. 即使請求失敗也會回傳 None 並快取，防止重複轟炸 Yahoo。
+    2. 加入更長的停頓確保穩定。
+    """
+    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料...", flush=True)
+    time.sleep(2.0) 
+    try:
+        info = yf.Ticker(ticker_str).info
+        # 檢查回傳內容是否有效 (有時會回傳含錯誤訊息的 dict)
+        if not info or not isinstance(info, dict) or 'regularMarketPrice' not in info and 'currentPrice' not in info:
+            return None
+        return info
+    except Exception as e:
+        print(f"   -> [注意] Yahoo .info 請求失敗: {e}", flush=True)
+        return None
 
 @tool
 def get_company_info(symbol: str) -> str:
-    """取得公司正式名稱與產業類別"""
+    """取得公司名稱與產業。若 API 失效，自動切換至搜尋引擎。"""
     print(f"\n[Tool] 抓取公司資料: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
+    
+    # 1. 嘗試 API
+    info = _get_stock_info(ticker_str)
+    if info:
+        return f"【官方紀錄名稱】: {info.get('longName', '未知')} (簡稱: {info.get('shortName', '未知')}), 產業: {info.get('sector', '未知')}"
+    
+    # 2. API 失敗，改用搜尋
+    print(f"   -> [備用方案] API 被擋，改用搜尋引擎抓取公司名稱...", flush=True)
     try:
-        info = _get_stock_info(ticker_str)
-        official_name = info.get("longName", "未知")
-        short_name = info.get("shortName", "未知")
-        sector = info.get("sector", "未知")
-        return f"【官方紀錄名稱】: {official_name} (簡稱: {short_name}), 產業: {sector}"
-    except Exception as e:
-        return f"無法取得代碼 {symbol} 的正式名稱。"
+        search = DuckDuckGoSearchRun()
+        res = search.run(f"台股代號 {symbol} 公司名稱與產業類別")
+        return f"根據最新搜尋結果：\n{res[:300]}"
+    except:
+        return f"無法取得代碼 {symbol} 的詳細資訊。"
 
 @tool
 def get_stock_price(symbol: str) -> str:
-    """取得當前股價數據 (具備雙重防護網)"""
+    """取得當前股價數據 (雙重防護)"""
     print(f"\n[Tool] 抓取股價: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     
-    price, prev = '無法取得', '無法取得'
-    
-    # 🌟 防護網 1：優先使用 info (享受快取與速度)
-    try:
-        info = _get_stock_info(ticker_str)
-        if isinstance(info, dict):
-            price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
-            prev = info.get('previousClose', '無法取得')
-    except Exception as e:
-        # 如果 Yahoo 封鎖 info 導致報錯，不中斷程式，印出警告後交給防護網 2
-        print(f"   -> [警告] info 獲取失敗，準備切換歷史 K 線備用方案...", flush=True)
-        
-    # 🌟 防護網 2：如果 info 失敗或沒資料，無縫切換 history 備用方案
-    if price == '無法取得' or prev == '無法取得':
-        try:
-            print(f"   -> [備用方案] 使用 history() 抓取 {ticker_str}...", flush=True)
-            time.sleep(1) # 啟動備用方案前喘口氣，防 429
-            hist = yf.Ticker(ticker_str).history(period="5d")
+    info = _get_stock_info(ticker_str)
+    if info:
+        price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
+        prev = info.get('previousClose', '無法取得')
+        if price != '無法取得':
+            return f"目前股價: {price}, 昨收價: {prev}"
             
-            if not hist.empty and len(hist) >= 2:
-                price = round(hist['Close'].iloc[-1], 2)
-                prev = round(hist['Close'].iloc[-2], 2)
-        except Exception as e:
-            print(f"❌ [錯誤] 備用方案也失敗 {ticker_str}: {e}", flush=True)
-
-    if price == '無法取得':
-        return "⚠️ 股價暫時無法取得"
-        
-    return f"目前股價: {price}, 昨收價: {prev}"
+    # 備用方案：K 線圖
+    try:
+        print(f"   -> [備用方案] info 失敗，改用 history() 抓取股價...", flush=True)
+        hist = yf.Ticker(ticker_str).history(period="5d")
+        if not hist.empty and len(hist) >= 2:
+            price = round(hist['Close'].iloc[-1], 2)
+            prev = round(hist['Close'].iloc[-2], 2)
+            return f"目前股價: {price}, 昨收價: {prev}"
+    except:
+        pass
+    return "⚠️ 股價暫時無法取得"
 
 @tool
 def get_stock_news(symbol: str) -> str:
-    """透過搜尋引擎取得最新新聞"""
+    """搜尋最新新聞"""
     print(f"\n[Tool] 搜尋新聞: {symbol}", flush=True)
-    time.sleep(2) 
-    query = f"台股 {symbol} 最新財經新聞分析" if symbol.isdigit() else f"US stock {symbol} latest financial news"
-    
+    time.sleep(1.5)
+    query = f"台股 {symbol} 最新財經新聞分析與展望" if symbol.isdigit() else f"US stock {symbol} news analysis"
     try:
         search = DuckDuckGoSearchRun()
         results = search.run(query)
-        if results:
-            max_chars = 1000
-            if len(results) > max_chars:
-                results = results[:max_chars] + "\n...(為節省記憶體，已截斷後續新聞內容)"
-            return f"🔍 搜尋結果：\n{results}"
-        return "近期無重大新聞。"
-    except Exception as e:
+        return f"🔍 最新動態：\n{results[:1000]}" if results else "近期無重大新聞。"
+    except:
         return "⚠️ 新聞搜尋目前無法使用"
 
 @tool
 def get_financial_report(symbol: str) -> str:
-    """取得財務簡報"""
+    """取得財報摘要。若 API 失效，改搜尋營收展望。"""
     print(f"\n[Tool] 抓取財報: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
-    try:
-        info = _get_stock_info(ticker_str)
+    
+    info = _get_stock_info(ticker_str)
+    if info:
         rev = info.get('totalRevenue', "無法取得")
         margins = info.get('profitMargins', "無法取得")
         return f"代碼: {ticker_str}, 總營收: {rev}, 淨利率: {margins}"
-    except Exception as e:
-        return "⚠️ 財報系統暫時無法讀取"
     
+    # 搜尋備援
+    print(f"   -> [備用方案] API 失敗，搜尋最新財報數據...", flush=True)
+    try:
+        search = DuckDuckGoSearchRun()
+        res = search.run(f"台股 {symbol} 最近一季營收與獲利表現")
+        return f"根據最新財經資料：\n{res[:500]}"
+    except:
+        return "⚠️ 財報系統暫時無法讀取"
+
 @tool
 def get_recent_momentum(symbol: str) -> str:
-    """取得公司近期的短期財務動能"""
+    """取得短期財務動能。若 API 失效，改搜尋市場動能評價。"""
     print(f"\n[Tool] 抓取近期動能: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
-    try:
-        info = _get_stock_info(ticker_str)
+    
+    info = _get_stock_info(ticker_str)
+    if info:
         q_rev_growth = info.get('quarterlyRevenueGrowth')
         q_earn_growth = info.get('earningsGrowth')
-        trailing_eps = info.get('trailingEps', '無法取得')
+        trailing_eps = info.get('trailingEps', '無資料')
+        def fmt_pct(val): return f"{val * 100:.2f}%" if isinstance(val, (int, float)) else "無資料"
+        return f"【{ticker_str} 動能】\n- 營收成長: {fmt_pct(q_rev_growth)}\n- 盈餘成長: {fmt_pct(q_earn_growth)}\n- EPS: {trailing_eps}"
 
-        def fmt_pct(val):
-            return f"{val * 100:.2f}%" if isinstance(val, (int, float)) else "無資料"
-
-        return (
-            f"【{ticker_str} 短期財報動能】\n"
-            f"- 季營收成長率 (YoY): {fmt_pct(q_rev_growth)}\n"
-            f"- 季盈餘成長率 (YoY): {fmt_pct(q_earn_growth)}\n"
-            f"- 近四季累積 EPS: {trailing_eps}"
-        )
-    except Exception as e:
+    # 搜尋備援
+    print(f"   -> [備用方案] API 失敗，搜尋市場動能展望...", flush=True)
+    try:
+        search = DuckDuckGoSearchRun()
+        res = search.run(f"{symbol} 股價動能 營收成長率 展望")
+        return f"根據最新市場分析：\n{res[:500]}"
+    except:
         return "⚠️ 近期動能指標暫時無法取得"
     
 @tool
