@@ -6,9 +6,29 @@ from functools import lru_cache
 import json
 import os
 import inspect
+import requests  # ✨ 新增：用來建立偽裝通道
 
 # 引入資料庫模組
 from database import SessionLocal, User, Portfolio
+
+# ==========================================
+# 🛡️ 建立「真人瀏覽器偽裝通道」，突破 Yahoo 雲端封鎖
+# ==========================================
+yf_session = requests.Session()
+yf_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
+})
+# ==========================================
 
 def _get_valid_ticker(symbol: str) -> str:
     """自動判斷台股或美股代碼"""
@@ -21,13 +41,15 @@ def _get_valid_ticker(symbol: str) -> str:
 def _get_stock_info(ticker_str: str):
     """
     強健式資料中心：
-    1. 即使請求失敗也會回傳 None 並快取，防止重複轟炸 Yahoo。
-    2. 加入更長的停頓確保穩定。
+    1. 帶入 yf_session 進行真人偽裝，突破封鎖。
+    2. 即使請求失敗也會回傳 None 並快取，防止重複轟炸 Yahoo。
+    3. 加入更長的停頓確保穩定。
     """
-    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料...", flush=True)
+    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (啟動真人瀏覽器偽裝)...", flush=True)
     time.sleep(2.0) 
     try:
-        info = yf.Ticker(ticker_str).info
+        # ✨ 關鍵修改：將偽裝的 session 傳給 Ticker
+        info = yf.Ticker(ticker_str, session=yf_session).info
         # 檢查回傳內容是否有效 (有時會回傳含錯誤訊息的 dict)
         if not info or not isinstance(info, dict) or 'regularMarketPrice' not in info and 'currentPrice' not in info:
             return None
@@ -52,7 +74,8 @@ def get_stock_price(symbol: str) -> str:
     # 備用方案：K 線圖
     try:
         print(f"   -> [備用方案] info 失敗，改用 history() 抓取股價...", flush=True)
-        hist = yf.Ticker(ticker_str).history(period="5d")
+        # ✨ 關鍵修改：備用方案也需要加上 session
+        hist = yf.Ticker(ticker_str, session=yf_session).history(period="5d")
         if not hist.empty and len(hist) >= 2:
             price = round(hist['Close'].iloc[-1], 2)
             prev = round(hist['Close'].iloc[-2], 2)
@@ -88,8 +111,8 @@ def get_stock_news(symbol: str) -> str:
     ticker_str = _get_valid_ticker(symbol)
     
     try:
-        # ✨ 秘密武器：yfinance 內建新聞 (不受 crumb 或 .info 限制)
-        news_data = yf.Ticker(ticker_str).news
+        # ✨ 關鍵修改：利用 yfinance 的 news 功能，並帶上 session
+        news_data = yf.Ticker(ticker_str, session=yf_session).news
         if news_data:
             news_list = []
             for n in news_data[:5]:
@@ -288,7 +311,7 @@ def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
         user = db.query(User).filter(User.id == uid).first()
         if not user: return "錯誤：找不到使用者帳戶。"
 
-        # ✨ 新增：自動抓取公司名稱，讓圓餅圖顯示中文
+        # 自動抓取公司名稱，讓圓餅圖顯示中文
         try:
             info = _get_stock_info(ticker_str)
             # 優先拿短簡稱 (shortName)，沒有就拿長名稱 (longName)，再沒有才用代碼
@@ -362,7 +385,7 @@ def manual_sell_stock(ticker: str, price: float, shares: int) -> str:
         base_value = price * shares
         fee = int(base_value * 0.001425)
         fee = 20 if fee < 20 else fee
-        tax = int(base_value * 0.003) # ✅ 已確保是正確的 0.3%
+        tax = int(base_value * 0.003) 
         
         # 2. 實際拿回的錢
         net_value = base_value - fee - tax

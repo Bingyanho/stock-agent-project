@@ -13,5 +13,7 @@ matplotlib
 requests
 python-dotenv
 psycopg2-binary
-langchain-community
-duckduckgo-search
+langchain-community>=0.2.0
+duckduckgo-search>=5.3.1
+
+
