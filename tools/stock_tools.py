@@ -37,26 +37,6 @@ def _get_stock_info(ticker_str: str):
         return None
 
 @tool
-def get_company_info(symbol: str) -> str:
-    """取得公司名稱與產業。若 API 失效，自動切換至搜尋引擎。"""
-    print(f"\n[Tool] 抓取公司資料: {symbol}", flush=True)
-    ticker_str = _get_valid_ticker(symbol)
-    
-    # 1. 嘗試 API
-    info = _get_stock_info(ticker_str)
-    if info:
-        return f"【官方紀錄名稱】: {info.get('longName', '未知')} (簡稱: {info.get('shortName', '未知')}), 產業: {info.get('sector', '未知')}"
-    
-    # 2. API 失敗，改用搜尋
-    print(f"   -> [備用方案] API 被擋，改用搜尋引擎抓取公司名稱...", flush=True)
-    try:
-        search = DuckDuckGoSearchRun()
-        res = search.run(f"台股代號 {symbol} 公司名稱與產業類別")
-        return f"根據最新搜尋結果：\n{res[:300]}"
-    except:
-        return f"無法取得代碼 {symbol} 的詳細資訊。"
-
-@tool
 def get_stock_price(symbol: str) -> str:
     """取得當前股價數據 (雙重防護)"""
     print(f"\n[Tool] 抓取股價: {symbol}", flush=True)
@@ -82,16 +62,55 @@ def get_stock_price(symbol: str) -> str:
     return "⚠️ 股價暫時無法取得"
 
 @tool
+def get_company_info(symbol: str) -> str:
+    """取得公司名稱與產業。若 API 失效，自動切換至搜尋引擎。"""
+    print(f"\n[Tool] 抓取公司資料: {symbol}", flush=True)
+    ticker_str = _get_valid_ticker(symbol)
+    
+    info = _get_stock_info(ticker_str)
+    if info:
+        return f"【官方紀錄名稱】: {info.get('longName', '未知')} (簡稱: {info.get('shortName', '未知')}), 產業: {info.get('sector', '未知')}"
+    
+    print(f"   -> [備用方案] API 被擋，改用搜尋引擎抓取公司名稱...", flush=True)
+    time.sleep(2) # 增加煞車
+    try:
+        search = DuckDuckGoSearchRun()
+        res = search.run(f"台股代號 {symbol} 公司名稱與產業類別")
+        return f"根據最新搜尋結果：\n{res[:300]}"
+    except Exception as e:
+        print(f"   -> [錯誤] 公司資料 DDG 搜尋失敗: {e}", flush=True)
+        return f"無法取得代碼 {symbol} 的詳細資訊。"
+
+@tool
 def get_stock_news(symbol: str) -> str:
-    """搜尋最新新聞"""
+    """取得最新新聞 (優先使用 Yahoo 內建新聞，極難被封鎖)"""
     print(f"\n[Tool] 搜尋新聞: {symbol}", flush=True)
-    time.sleep(1.5)
+    ticker_str = _get_valid_ticker(symbol)
+    
+    try:
+        # ✨ 秘密武器：yfinance 內建新聞 (不受 crumb 或 .info 限制)
+        news_data = yf.Ticker(ticker_str).news
+        if news_data:
+            news_list = []
+            for n in news_data[:5]:
+                title = n.get('title', '')
+                publisher = n.get('publisher', '')
+                news_list.append(f"- {title} ({publisher})")
+            if news_list:
+                return f"📰 Yahoo 最新新聞：\n" + "\n".join(news_list)
+    except Exception as e:
+        print(f"   -> [警告] Yahoo 內建新聞失敗: {e}", flush=True)
+
+    # 如果 Yahoo 新聞也掛了，才動用搜尋引擎
+    print(f"   -> [備用方案] 改用 DuckDuckGo 搜尋新聞...", flush=True)
+    time.sleep(3) # 增加煞車
     query = f"台股 {symbol} 最新財經新聞分析與展望" if symbol.isdigit() else f"US stock {symbol} news analysis"
     try:
         search = DuckDuckGoSearchRun()
         results = search.run(query)
         return f"🔍 最新動態：\n{results[:1000]}" if results else "近期無重大新聞。"
-    except:
+    except Exception as e:
+        print(f"   -> [錯誤] 新聞 DDG 搜尋失敗: {e}", flush=True)
         return "⚠️ 新聞搜尋目前無法使用"
 
 @tool
@@ -106,13 +125,14 @@ def get_financial_report(symbol: str) -> str:
         margins = info.get('profitMargins', "無法取得")
         return f"代碼: {ticker_str}, 總營收: {rev}, 淨利率: {margins}"
     
-    # 搜尋備援
     print(f"   -> [備用方案] API 失敗，搜尋最新財報數據...", flush=True)
+    time.sleep(3) # 增加煞車
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"台股 {symbol} 最近一季營收與獲利表現")
         return f"根據最新財經資料：\n{res[:500]}"
-    except:
+    except Exception as e:
+        print(f"   -> [錯誤] 財報 DDG 搜尋失敗: {e}", flush=True)
         return "⚠️ 財報系統暫時無法讀取"
 
 @tool
@@ -129,13 +149,14 @@ def get_recent_momentum(symbol: str) -> str:
         def fmt_pct(val): return f"{val * 100:.2f}%" if isinstance(val, (int, float)) else "無資料"
         return f"【{ticker_str} 動能】\n- 營收成長: {fmt_pct(q_rev_growth)}\n- 盈餘成長: {fmt_pct(q_earn_growth)}\n- EPS: {trailing_eps}"
 
-    # 搜尋備援
     print(f"   -> [備用方案] API 失敗，搜尋市場動能展望...", flush=True)
+    time.sleep(3) # 增加煞車
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"{symbol} 股價動能 營收成長率 展望")
         return f"根據最新市場分析：\n{res[:500]}"
-    except:
+    except Exception as e:
+        print(f"   -> [錯誤] 動能 DDG 搜尋失敗: {e}", flush=True)
         return "⚠️ 近期動能指標暫時無法取得"
     
 @tool
