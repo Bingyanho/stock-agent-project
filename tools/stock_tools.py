@@ -6,29 +6,9 @@ from functools import lru_cache
 import json
 import os
 import inspect
-import requests  # ✨ 新增：用來建立偽裝通道
 
 # 引入資料庫模組
 from database import SessionLocal, User, Portfolio
-
-# ==========================================
-# 🛡️ 建立「真人瀏覽器偽裝通道」，突破 Yahoo 雲端封鎖
-# ==========================================
-yf_session = requests.Session()
-yf_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Cache-Control": "max-age=0",
-})
-# ==========================================
 
 def _get_valid_ticker(symbol: str) -> str:
     """自動判斷台股或美股代碼"""
@@ -39,19 +19,13 @@ def _get_valid_ticker(symbol: str) -> str:
 
 @lru_cache(maxsize=10)
 def _get_stock_info(ticker_str: str):
-    """
-    強健式資料中心：
-    1. 帶入 yf_session 進行真人偽裝，突破封鎖。
-    2. 即使請求失敗也會回傳 None 並快取，防止重複轟炸 Yahoo。
-    3. 加入更長的停頓確保穩定。
-    """
-    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (啟動真人瀏覽器偽裝)...", flush=True)
+    """強健式資料中心：把 session 拿掉，讓最新版 yfinance 內建的 curl_cffi 自己處理偽裝"""
+    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料...", flush=True)
     time.sleep(2.0) 
     try:
-        # ✨ 關鍵修改：將偽裝的 session 傳給 Ticker
-        info = yf.Ticker(ticker_str, session=yf_session).info
-        # 檢查回傳內容是否有效 (有時會回傳含錯誤訊息的 dict)
-        if not info or not isinstance(info, dict) or 'regularMarketPrice' not in info and 'currentPrice' not in info:
+        # ✨ 關鍵還原：不再傳遞 session，讓 YF 自動處理
+        info = yf.Ticker(ticker_str).info
+        if not info or not isinstance(info, dict) or ('regularMarketPrice' not in info and 'currentPrice' not in info):
             return None
         return info
     except Exception as e:
@@ -74,8 +48,8 @@ def get_stock_price(symbol: str) -> str:
     # 備用方案：K 線圖
     try:
         print(f"   -> [備用方案] info 失敗，改用 history() 抓取股價...", flush=True)
-        # ✨ 關鍵修改：備用方案也需要加上 session
-        hist = yf.Ticker(ticker_str, session=yf_session).history(period="5d")
+        # ✨ 關鍵還原：不再傳遞 session
+        hist = yf.Ticker(ticker_str).history(period="5d")
         if not hist.empty and len(hist) >= 2:
             price = round(hist['Close'].iloc[-1], 2)
             prev = round(hist['Close'].iloc[-2], 2)
@@ -95,7 +69,7 @@ def get_company_info(symbol: str) -> str:
         return f"【官方紀錄名稱】: {info.get('longName', '未知')} (簡稱: {info.get('shortName', '未知')}), 產業: {info.get('sector', '未知')}"
     
     print(f"   -> [備用方案] API 被擋，改用搜尋引擎抓取公司名稱...", flush=True)
-    time.sleep(2) # 增加煞車
+    time.sleep(2) 
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"台股代號 {symbol} 公司名稱與產業類別")
@@ -106,13 +80,13 @@ def get_company_info(symbol: str) -> str:
 
 @tool
 def get_stock_news(symbol: str) -> str:
-    """取得最新新聞 (優先使用 Yahoo 內建新聞，極難被封鎖)"""
+    """取得最新新聞"""
     print(f"\n[Tool] 搜尋新聞: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     
     try:
-        # ✨ 關鍵修改：利用 yfinance 的 news 功能，並帶上 session
-        news_data = yf.Ticker(ticker_str, session=yf_session).news
+        # ✨ 關鍵還原：不再傳遞 session
+        news_data = yf.Ticker(ticker_str).news
         if news_data:
             news_list = []
             for n in news_data[:5]:
@@ -124,9 +98,8 @@ def get_stock_news(symbol: str) -> str:
     except Exception as e:
         print(f"   -> [警告] Yahoo 內建新聞失敗: {e}", flush=True)
 
-    # 如果 Yahoo 新聞也掛了，才動用搜尋引擎
     print(f"   -> [備用方案] 改用 DuckDuckGo 搜尋新聞...", flush=True)
-    time.sleep(3) # 增加煞車
+    time.sleep(3) 
     query = f"台股 {symbol} 最新財經新聞分析與展望" if symbol.isdigit() else f"US stock {symbol} news analysis"
     try:
         search = DuckDuckGoSearchRun()
@@ -149,7 +122,7 @@ def get_financial_report(symbol: str) -> str:
         return f"代碼: {ticker_str}, 總營收: {rev}, 淨利率: {margins}"
     
     print(f"   -> [備用方案] API 失敗，搜尋最新財報數據...", flush=True)
-    time.sleep(3) # 增加煞車
+    time.sleep(3) 
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"台股 {symbol} 最近一季營收與獲利表現")
@@ -173,7 +146,7 @@ def get_recent_momentum(symbol: str) -> str:
         return f"【{ticker_str} 動能】\n- 營收成長: {fmt_pct(q_rev_growth)}\n- 盈餘成長: {fmt_pct(q_earn_growth)}\n- EPS: {trailing_eps}"
 
     print(f"   -> [備用方案] API 失敗，搜尋市場動能展望...", flush=True)
-    time.sleep(3) # 增加煞車
+    time.sleep(3) 
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"{symbol} 股價動能 營收成長率 展望")
