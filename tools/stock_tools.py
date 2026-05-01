@@ -19,8 +19,9 @@ def _get_valid_ticker(symbol: str) -> str:
 
 @lru_cache(maxsize=10)
 def _get_stock_info(ticker_str: str):
+    """集中處理 info 請求，帶有快取與防擋煞車"""
     print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (快取運作中)...", flush=True)
-    time.sleep(1) 
+    time.sleep(1.5) 
     return yf.Ticker(ticker_str).info
 
 @tool
@@ -39,33 +40,39 @@ def get_company_info(symbol: str) -> str:
 
 @tool
 def get_stock_price(symbol: str) -> str:
-    """取得當前股價數據"""
+    """取得當前股價數據 (具備雙重防護網)"""
     print(f"\n[Tool] 抓取股價: {symbol}", flush=True)
+    ticker_str = _get_valid_ticker(symbol)
     
-    # ✨ 防護 1：強制煞車 2 秒。避免同一秒內發送大量請求導致 Too Many Requests
-    time.sleep(2)
+    price, prev = '無法取得', '無法取得'
     
-    ticker_str = _get_valid_ticker(symbol) 
-    
+    # 🌟 防護網 1：優先使用 info (享受快取與速度)
     try:
-        stock = yf.Ticker(ticker_str)
-        
-        # ✨ 防護 2：完全捨棄 .info，直接用 .history 抓近 5 天的 K 線資料
-        hist = stock.history(period="5d")
-        
-        # 檢查是否有抓到資料
-        if hist.empty or len(hist) < 2:
-            return "⚠️ 股價暫時無法取得 (無資料或被限制)"
-            
-        # 從 K 線資料中取出最新價與昨收價
-        price = round(hist['Close'].iloc[-1], 2)
-        prev = round(hist['Close'].iloc[-2], 2)
-                
-        return f"目前股價: {price}, 昨收價: {prev}"
-        
+        info = _get_stock_info(ticker_str)
+        if isinstance(info, dict):
+            price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
+            prev = info.get('previousClose', '無法取得')
     except Exception as e:
-        print(f"⚠️ {ticker_str} 股價抓取錯誤: {e}", flush=True) 
+        # 如果 Yahoo 封鎖 info 導致報錯，不中斷程式，印出警告後交給防護網 2
+        print(f"   -> [警告] info 獲取失敗，準備切換歷史 K 線備用方案...", flush=True)
+        
+    # 🌟 防護網 2：如果 info 失敗或沒資料，無縫切換 history 備用方案
+    if price == '無法取得' or prev == '無法取得':
+        try:
+            print(f"   -> [備用方案] 使用 history() 抓取 {ticker_str}...", flush=True)
+            time.sleep(1) # 啟動備用方案前喘口氣，防 429
+            hist = yf.Ticker(ticker_str).history(period="5d")
+            
+            if not hist.empty and len(hist) >= 2:
+                price = round(hist['Close'].iloc[-1], 2)
+                prev = round(hist['Close'].iloc[-2], 2)
+        except Exception as e:
+            print(f"❌ [錯誤] 備用方案也失敗 {ticker_str}: {e}", flush=True)
+
+    if price == '無法取得':
         return "⚠️ 股價暫時無法取得"
+        
+    return f"目前股價: {price}, 昨收價: {prev}"
 
 @tool
 def get_stock_news(symbol: str) -> str:
@@ -162,7 +169,7 @@ def run_quant_analysis_engine():
     uid = current_user_id.get()
     
     try:
-        # 動態判斷 run_daily_strategy 是否已支援 user_id 參數 (為了向下相容)
+        # 動態判斷 run_daily_strategy 是否已支援 user_id 參數
         sig = inspect.signature(run_daily_strategy)
         if 'user_id' in sig.parameters:
             account, equity, market_status, sell_msg, buy_msg, watchlist = run_daily_strategy(user_id=uid)
@@ -211,7 +218,6 @@ def correct_buy_position(ticker: str, real_price: float, real_shares: int) -> st
             ticker += ".TW"
 
         user = db.query(User).filter(User.id == uid).first()
-        # 尋找該使用者擁有的這檔股票
         pos = db.query(Portfolio).filter(Portfolio.user_id == uid, Portfolio.ticker == ticker).first()
         
         if pos:
@@ -236,57 +242,67 @@ def correct_buy_position(ticker: str, real_price: float, real_shares: int) -> st
 
 @tool
 def generate_portfolio_pie_chart() -> str:
-    """
-    觸發前端渲染資產現值分布圖。
-    在多使用者雲端架構下，畫圖由 FastAPI 即時進行，此工具僅負責回傳確認訊號。
-    """
+    """觸發前端渲染資產現值分布圖"""
     return "✅ 系統已收到請求。請告訴使用者：「已為您在介面側邊欄同步更新最新的資產配置圓餅圖」。"
 
 @tool
 def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
-    """手動新增持股或買進股票。會自動計算台灣股市標準手續費並扣除現金。"""
+    """手動新增持股或買進股票。自動抓取公司名稱並計算手續費。"""
     from agent import current_user_id
     uid = current_user_id.get()
     db = SessionLocal()
     try:
         ticker = str(ticker).upper()
-        if not (".TW" in ticker or ".TWO" in ticker): 
-            ticker += ".TW"
+        ticker_str = _get_valid_ticker(ticker) # 確保格式正確 (如 2330.TW)
             
         user = db.query(User).filter(User.id == uid).first()
         if not user: return "錯誤：找不到使用者帳戶。"
 
-        # 1. 計算買進成本與手續費 (台股標準手續費 0.1425%，低消 20 元)
+        # ✨ 新增：自動抓取公司名稱，讓圓餅圖顯示中文
+        try:
+            info = _get_stock_info(ticker_str)
+            # 優先拿短簡稱 (shortName)，沒有就拿長名稱 (longName)，再沒有才用代碼
+            stock_name = info.get("shortName", info.get("longName", ticker_str))
+        except:
+            stock_name = ticker_str # 萬一網路斷線或抓不到，才退回使用代碼
+
+        # 1. 計算買進成本與手續費
         base_cost = price * shares
         fee = int(base_cost * 0.001425)
         fee = 20 if fee < 20 else fee
         total_cost = base_cost + fee
 
         if user.cash < total_cost:
-            return f"⚠️ 現金不足！目前餘額 {user.cash:,.0f} 元，購買含手續費需 {total_cost:,.0f} 元 (股款 {base_cost:,.0f} + 手續費 {fee})。"
+            return f"⚠️ 現金不足！目前餘額 {user.cash:,.0f} 元，購買需 {total_cost:,.0f} 元。"
 
         # 2. 扣除總額
         user.cash -= total_cost
 
-        # 3. 檢查是否已有該檔持股
-        pos = db.query(Portfolio).filter(Portfolio.user_id == uid, Portfolio.ticker == ticker).first()
+        # 3. 更新或新增持股
+        pos = db.query(Portfolio).filter(Portfolio.user_id == uid, Portfolio.ticker == ticker_str).first()
         if pos:
-            # 已有持股：將手續費攤入，重新計算平均成本價
             old_total_cost = pos.shares * pos.entry_price
             pos.shares += shares
             pos.entry_price = (old_total_cost + total_cost) / pos.shares
             pos.buy_fee += fee
+            # 如果原本是代碼，更新成中文名稱
+            if pos.name == ticker_str:
+                pos.name = stock_name
         else:
-            # 新增持股：將手續費攤入成本價，這樣才符合真實損益計算
             new_pos = Portfolio(
-                user_id=uid, ticker=ticker, name=ticker, 
-                shares=shares, entry_price=(total_cost / shares), peak_price=price, 
-                buy_fee=fee, entry_date="手動建倉"
+                user_id=uid, 
+                ticker=ticker_str, 
+                name=stock_name,
+                shares=shares, 
+                entry_price=(total_cost / shares), 
+                peak_price=price, 
+                buy_fee=fee, 
+                entry_date="手動建倉"
             )
             db.add(new_pos)
         
         db.commit()
-        return f"✅ 成功買進 {ticker} {shares} 股 (單價 {price} 元)。加上手續費 {fee} 元，共扣款 {total_cost:,.0f} 元。目前剩餘現金 {user.cash:,.0f} 元。"
+        return f"✅ 成功買進 {stock_name} ({ticker_str}) {shares} 股。目前剩餘現金 {user.cash:,.0f} 元。"
     except Exception as e:
         return f"手動買進失敗: {e}"
     finally:
@@ -295,7 +311,7 @@ def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
 
 @tool
 def manual_sell_stock(ticker: str, price: float, shares: int) -> str:
-    """手動賣出股票或減少持股。會自動計算標準手續費與證交稅，並增加現金。"""
+    """手動賣出股票或減少持股。自動計算標準手續費與 0.3% 證交稅，並增加現金。"""
     from agent import current_user_id
     uid = current_user_id.get()
     db = SessionLocal()
@@ -316,9 +332,9 @@ def manual_sell_stock(ticker: str, price: float, shares: int) -> str:
         base_value = price * shares
         fee = int(base_value * 0.001425)
         fee = 20 if fee < 20 else fee
-        tax = int(base_value * 0.003)
+        tax = int(base_value * 0.003) # ✅ 已確保是正確的 0.3%
         
-        # 2. 實際拿回的錢 = 賣出總值 - 手續費 - 交易稅
+        # 2. 實際拿回的錢
         net_value = base_value - fee - tax
         
         # 3. 更新現金與股數
