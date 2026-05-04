@@ -11,7 +11,7 @@ import datetime
 # 引入資料庫模組
 from database import SessionLocal, User, Portfolio
 
-import re  # ⚠️ 記得確保檔案最上方有這行！
+import re
 
 def _get_valid_ticker(symbol: str) -> str:
     """自動提取代碼，完美過濾掉中文與雜訊"""
@@ -366,17 +366,22 @@ def manual_sell_stock(ticker: str, price: float, shares: int) -> str:
     uid = current_user_id.get()
     db = SessionLocal()
     try:
-        ticker = str(ticker).upper()
-        if not (".TW" in ticker or ".TWO" in ticker): 
-            ticker += ".TW"
+        # 🧹 核心修正：強制過濾掉中文與空白，只保留英文字母、數字與小數點
+        match = re.search(r'[A-Za-z0-9.]+', str(ticker))
+        clean_ticker = match.group(0).upper() if match else str(ticker).upper()
+        
+        # 如果清洗後只剩下代碼（例如 2368），自動幫他補上 .TW
+        if not (".TW" in clean_ticker or ".TWO" in clean_ticker): 
+            clean_ticker += ".TW"
             
         user = db.query(User).filter(User.id == uid).first()
-        pos = db.query(Portfolio).filter(Portfolio.user_id == uid, Portfolio.ticker == ticker).first()
+        # 🔍 注意這裡：改用 clean_ticker 去查詢資料庫
+        pos = db.query(Portfolio).filter(Portfolio.user_id == uid, Portfolio.ticker == clean_ticker).first()
         
         if not pos:
-            return f"⚠️ 您的庫存中沒有 {ticker} 這檔股票。"
+            return f"⚠️ 您的庫存中沒有 {clean_ticker} 這檔股票。"
         if pos.shares < shares:
-            return f"⚠️ 庫存股數不足！您目前只有 {pos.shares} 股 {ticker}。"
+            return f"⚠️ 庫存股數不足！您目前只有 {pos.shares} 股 {clean_ticker}。"
 
         # 1. 計算賣出價值、手續費(0.1425%) 與 證券交易稅(0.3%)
         base_value = price * shares
@@ -393,9 +398,9 @@ def manual_sell_stock(ticker: str, price: float, shares: int) -> str:
 
         if pos.shares == 0:
             db.delete(pos)
-            msg = f"✅ 成功出清 {ticker} {shares} 股 (單價 {price} 元)。"
+            msg = f"✅ 成功出清 {clean_ticker} {shares} 股 (單價 {price} 元)。"
         else:
-            msg = f"✅ 成功賣出 {ticker} {shares} 股 (單價 {price} 元)，尚餘 {pos.shares} 股。"
+            msg = f"✅ 成功賣出 {clean_ticker} {shares} 股 (單價 {price} 元)，尚餘 {pos.shares} 股。"
         
         db.commit()
         return f"{msg} 扣除手續費 {fee} 元與證交稅 {tax} 元後，實收 {net_value:,.0f} 元已存入帳戶。目前現金 {user.cash:,.0f} 元。"
