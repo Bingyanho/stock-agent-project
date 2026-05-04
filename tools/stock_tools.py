@@ -6,16 +6,24 @@ from functools import lru_cache
 import json
 import os
 import inspect
+import datetime
 
 # 引入資料庫模組
 from database import SessionLocal, User, Portfolio
 
+import re  # ⚠️ 記得確保檔案最上方有這行！
+
 def _get_valid_ticker(symbol: str) -> str:
-    """自動判斷台股或美股代碼"""
-    symbol = str(symbol).strip().upper() 
-    if "." in symbol: return symbol
-    if symbol.isdigit(): return f"{symbol}.TW"
-    return symbol
+    """自動提取代碼，完美過濾掉中文與雜訊"""
+    match = re.search(r'[A-Za-z0-9.]+', str(symbol))
+    if not match: 
+        return str(symbol).strip().upper()
+        
+    clean_symbol = match.group(0).upper()
+    if clean_symbol.isdigit(): 
+        return f"{clean_symbol}.TW"
+        
+    return clean_symbol
 
 @lru_cache(maxsize=10)
 def _get_stock_info(ticker_str: str):
@@ -79,35 +87,43 @@ def get_company_info(symbol: str) -> str:
         return f"無法取得代碼 {symbol} 的詳細資訊。"
 
 @tool
-def get_stock_news(symbol: str) -> str:
-    """取得最新新聞"""
-    print(f"\n[Tool] 搜尋新聞: {symbol}", flush=True)
-    ticker_str = _get_valid_ticker(symbol)
+def get_stock_news(query: str) -> str:
+    """
+    【核心工具：分析必備】
+    搜尋指定股票的最新新聞、市場評論與重大事件。
+    當使用者要求「分析」股票時，你『必須』呼叫此工具。
+    參數 query 建議傳入：『代碼+中文名稱+新聞』（例如：'2330.TW 台積電 新聞'）
+    """
+    # 增加一個 print 讓我們在終端機看得見它有被呼叫
+    print(f"\n[Tool] 正在搜尋新聞動態: {query}", flush=True)
     
+    # 🛡️ 優先嘗試：DuckDuckGo 實時搜尋 (台股最強解法)
     try:
-        # ✨ 關鍵還原：不再傳遞 session
-        news_data = yf.Ticker(ticker_str).news
-        if news_data:
-            news_list = []
-            for n in news_data[:5]:
-                title = n.get('title', '')
-                publisher = n.get('publisher', '')
-                news_list.append(f"- {title} ({publisher})")
-            if news_list:
-                return f"📰 Yahoo 最新新聞：\n" + "\n".join(news_list)
-    except Exception as e:
-        print(f"   -> [警告] Yahoo 內建新聞失敗: {e}", flush=True)
-
-    print(f"   -> [備用方案] 改用 DuckDuckGo 搜尋新聞...", flush=True)
-    time.sleep(3) 
-    query = f"台股 {symbol} 最新財經新聞分析與展望" if symbol.isdigit() else f"US stock {symbol} news analysis"
-    try:
+        from langchain_community.tools import DuckDuckGoSearchRun
         search = DuckDuckGoSearchRun()
-        results = search.run(query)
-        return f"🔍 最新動態：\n{results[:1000]}" if results else "近期無重大新聞。"
+        # 限制字數，避免 token 爆炸，但保留核心內容
+        search_query = query if "新聞" in query else f"{query} 新聞"
+        results = search.run(search_query)
+        if results and "error" not in results.lower():
+            return f"根據最新網路搜尋結果：\n{results[:800]}..."
     except Exception as e:
-        print(f"   -> [錯誤] 新聞 DDG 搜尋失敗: {e}", flush=True)
-        return "⚠️ 新聞搜尋目前無法使用"
+        print(f"   -> [警告] DDG 搜尋失敗: {e}", flush=True)
+
+    # 🛡️ 備援：原本的 Yahoo RSS (針對代碼搜尋)
+    try:
+        import requests
+        import xml.etree.ElementTree as ET
+        ticker = _get_valid_ticker(query)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}", headers=headers, timeout=5)
+        if resp.status_code == 200:
+            root = ET.fromstring(resp.text)
+            news_list = [f"- {item.find('title').text}" for item in root.findall('./channel/item')[:5]]
+            if news_list: return "📰 Yahoo 頭條：\n" + "\n".join(news_list)
+    except:
+        pass
+
+    return "📢 該公司近期於公開媒體無顯著重大負面或正面新聞，建議參考基本面表現。"
 
 @tool
 def get_financial_report(symbol: str) -> str:
@@ -273,24 +289,29 @@ def generate_portfolio_pie_chart() -> str:
 
 @tool
 def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
-    """手動新增持股或買進股票。自動抓取公司名稱並計算手續費。"""
+    """手動新增持股或買進股票。請在 ticker 參數中務必傳入「代碼+中文名稱」(例如: '2330.TW 台積電') 以便系統記錄中文名稱。"""
     from agent import current_user_id
     uid = current_user_id.get()
     db = SessionLocal()
     try:
-        ticker = str(ticker).upper()
-        ticker_str = _get_valid_ticker(ticker) # 確保格式正確 (如 2330.TW)
+        original_ticker = str(ticker)
+        ticker_str = _get_valid_ticker(original_ticker) # 確保格式正確 (如 2330.TW)
             
         user = db.query(User).filter(User.id == uid).first()
         if not user: return "錯誤：找不到使用者帳戶。"
 
-        # 自動抓取公司名稱，讓圓餅圖顯示中文
-        try:
-            info = _get_stock_info(ticker_str)
-            # 優先拿短簡稱 (shortName)，沒有就拿長名稱 (longName)，再沒有才用代碼
-            stock_name = info.get("shortName", info.get("longName", ticker_str))
-        except:
-            stock_name = ticker_str # 萬一網路斷線或抓不到，才退回使用代碼
+        # ✨ 新增：優先從 LLM 傳入的字串擷取中文名稱
+        import re
+        zh_match = re.search(r'[\u4e00-\u9fa5]+', original_ticker)
+        if zh_match:
+            stock_name = zh_match.group(0)  # 成功抓到 "台積電"
+        else:
+            # 備用方案：如果字串中沒有中文，才退回使用 Yahoo 抓取的英文名稱
+            try:
+                info = _get_stock_info(ticker_str)
+                stock_name = info.get("shortName", info.get("longName", ticker_str))
+            except:
+                stock_name = ticker_str
 
         # 1. 計算買進成本與手續費
         base_cost = price * shares
@@ -305,14 +326,17 @@ def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
         user.cash -= total_cost
 
         # 3. 更新或新增持股
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+
         pos = db.query(Portfolio).filter(Portfolio.user_id == uid, Portfolio.ticker == ticker_str).first()
         if pos:
             old_total_cost = pos.shares * pos.entry_price
             pos.shares += shares
             pos.entry_price = (old_total_cost + total_cost) / pos.shares
             pos.buy_fee += fee
-            # 如果原本是代碼，更新成中文名稱
-            if pos.name == ticker_str:
+            
+            # 如果舊紀錄的名稱是英文或代碼，趁這次買進把它更新為中文
+            if pos.name == ticker_str or not re.search(r'[\u4e00-\u9fa5]+', pos.name):
                 pos.name = stock_name
         else:
             new_pos = Portfolio(
@@ -323,7 +347,7 @@ def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
                 entry_price=(total_cost / shares), 
                 peak_price=price, 
                 buy_fee=fee, 
-                entry_date="手動建倉"
+                entry_date=today_str  # ✨ 修改這裡：存入真實的日期字串！
             )
             db.add(new_pos)
         

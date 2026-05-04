@@ -170,7 +170,7 @@ def get_portfolio_pie_chart(token: str = Query(...)):
             wedges, texts, autotexts = ax.pie(
                 sizes, labels=labels, autopct='%1.1f%%', startangle=140, 
                 colors=colors, explode=explode, pctdistance=0.82,
-                textprops={'fontsize': 14, 'fontweight': 'bold'}
+                textprops={'fontsize': 20, 'fontweight': 'bold'}
             )
             
             # 白色描邊效果 (避免深色背景看不見文字)
