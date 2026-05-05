@@ -7,6 +7,7 @@ import json
 import os
 import inspect
 import datetime
+import threading
 
 # 引入資料庫模組
 from database import SessionLocal, User, Portfolio
@@ -26,36 +27,61 @@ def _get_valid_ticker(symbol: str) -> str:
     return clean_symbol
 
 # ==========================================
-# 🛡️ 核心資料層 (全域快取防護網)
+# 🛡️ 核心資料層 (全域快取防護網 + 執行緒鎖)
 # ==========================================
 
-@lru_cache(maxsize=32)
-def _get_cached_yf_info(ticker_str: str):
-    """【快取層】專責抓取 info，記憶體內快取 32 筆，避免重複連線"""
-    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (info)...", flush=True)
-    time.sleep(1.0) # 縮短延遲，因為有快取保護了
-    try:
-        info = yf.Ticker(ticker_str).info
-        if not info or not isinstance(info, dict) or ('regularMarketPrice' not in info and 'currentPrice' not in info):
-            return None
-        return info
-    except Exception as e:
-        print(f"   -> [注意] Yahoo .info 請求失敗: {e}", flush=True)
-        return None
+# 建立全域字典來存放快取資料
+_yf_info_cache = {}
+_yf_history_cache = {}
 
-@lru_cache(maxsize=32)
+# 建立紅綠燈 (Lock)，防止並發衝擊
+_info_lock = threading.Lock()
+_history_lock = threading.Lock()
+
+def _get_cached_yf_info(ticker_str: str):
+    """【快取層】使用 Lock 防止併發請求穿透快取"""
+    with _info_lock: # 🚦 第一個進來的會鎖門，後面的會在這裡等待
+        
+        # 1. 如果資料已經在快取裡，直接回傳，不發送請求！
+        if ticker_str in _yf_info_cache:
+            return _yf_info_cache[ticker_str]
+            
+        # 2. 如果沒有，才真正發送網路請求
+        print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (info)...", flush=True)
+        time.sleep(1.0) 
+        
+        try:
+            info = yf.Ticker(ticker_str).info
+            if not info or not isinstance(info, dict) or ('regularMarketPrice' not in info and 'currentPrice' not in info):
+                _yf_info_cache[ticker_str] = None
+            else:
+                _yf_info_cache[ticker_str] = info
+        except Exception as e:
+            print(f"   -> [注意] Yahoo .info 請求失敗: {e}", flush=True)
+            _yf_info_cache[ticker_str] = None
+            
+        return _yf_info_cache[ticker_str]
+
 def _get_cached_yf_history(ticker_str: str):
-    """【快取層】專責抓取 history，補上原本備用方案沒有快取的漏洞"""
-    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} K線資料 (history)...", flush=True)
-    time.sleep(1.0)
-    try:
-        hist = yf.Ticker(ticker_str).history(period="5d")
-        if hist.empty or len(hist) < 2:
-            return None
-        return hist
-    except Exception as e:
-        print(f"   -> [注意] Yahoo .history 請求失敗: {e}", flush=True)
-        return None
+    """【快取層】使用 Lock 防止備用方案併發穿透"""
+    with _history_lock:
+        if ticker_str in _yf_history_cache:
+            return _yf_history_cache[ticker_str]
+            
+        print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} K線資料 (history)...", flush=True)
+        time.sleep(1.0)
+        
+        try:
+            hist = yf.Ticker(ticker_str).history(period="5d")
+            if hist.empty or len(hist) < 2:
+                _yf_history_cache[ticker_str] = None
+            else:
+                _yf_history_cache[ticker_str] = hist
+        except Exception as e:
+            print(f"   -> [注意] Yahoo .history 請求失敗: {e}", flush=True)
+            _yf_history_cache[ticker_str] = None
+            
+        return _yf_history_cache[ticker_str]
 
 # ==========================================
 # 🛠️ LLM 呼叫工具層 (全部改讀快取層)
