@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from passlib.context import CryptContext
+import yfinance as yf
 
 # 專案模組
 from agent import StockAnalysisSession, current_user_id
@@ -138,7 +139,24 @@ def get_portfolio_pie_chart(token: str = Query(...)):
         
         # 準備畫圖資料
         labels = [p.name for p in portfolios]
-        sizes = [p.shares * p.entry_price for p in portfolios] 
+        sizes = []
+
+        # ✨ 統一估值邏輯：嘗試抓取即時股價，若失敗則使用成本價
+        for p in portfolios:
+            current_price = 0
+            try:
+                # 抓取最新股價 (這段邏輯必須跟你 check_portfolio 裡的一模一樣)
+                ticker_data = yf.Ticker(p.ticker)
+                current_price = ticker_data.fast_info['last_price']
+            except Exception as e:
+                print(f"⚠️ 無法抓取 {p.ticker} 即時股價，改用成本價。原因: {e}")
+            
+            # 🛡️ 防呆：如果股價抓不到或是 0，退回使用 entry_price (成本價)
+            if not current_price or current_price == 0:
+                current_price = p.entry_price
+                
+            # 計算該檔股票的當前市值
+            sizes.append(p.shares * current_price)
         
         if user and user.cash > 0:
             labels.append("現金")

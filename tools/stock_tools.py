@@ -173,7 +173,7 @@ def get_recent_momentum(symbol: str) -> str:
     
 @tool
 def get_quant_portfolio_status():
-    """讀取當前使用者的帳戶狀態 (改接 SQL 資料庫)"""
+    """讀取當前使用者的帳戶狀態，包含即時股價估值與總資產計算。"""
     from agent import current_user_id
     uid = current_user_id.get()
     if not uid: return "錯誤：找不到使用者 ID，請重新登入。"
@@ -185,19 +185,45 @@ def get_quant_portfolio_status():
         
         portfolios = db.query(Portfolio).filter(Portfolio.user_id == uid).all()
         
+        enriched_portfolio = []
+        total_market_value = 0
+        
+        for p in portfolios:
+            # --- 🛡️ 核心邏輯：抓取即時市價 ---
+            current_price = 0
+            try:
+                # 使用 fast_info 速度較快
+                ticker_data = yf.Ticker(p.ticker)
+                current_price = ticker_data.fast_info['last_price']
+            except:
+                pass # 抓失敗就維持 0
+            
+            # 如果抓不到市價 (斷網或 API 限制)，就用成本價當作估值基準
+            display_price = current_price if current_price > 0 else p.entry_price
+            stock_value = p.shares * display_price
+            total_market_value += stock_value
+            
+            enriched_portfolio.append({
+                "Ticker": p.ticker,
+                "Name": p.name,
+                "Shares": p.shares,
+                "Entry_Price": round(p.entry_price, 2),
+                "Current_Price": round(display_price, 2),
+                "Value": round(stock_value, 0)
+            })
+
+        # 計算總資產 (現金 + 所有股票市值)
+        total_assets = user.cash + total_market_value
+        
         account_data = {
             "username": user.username,
-            "cash": user.cash,
-            "portfolio": [
-                {
-                    "Ticker": p.ticker,
-                    "Name": p.name,
-                    "Shares": p.shares,
-                    "Entry_Price": p.entry_price
-                } for p in portfolios
-            ]
+            "cash": round(user.cash, 0),
+            "total_assets_valuation": round(total_assets, 0), # ✨ 直接給阿財總數
+            "portfolio": enriched_portfolio
         }
+        
         return json.dumps(account_data, ensure_ascii=False)
+        
     except Exception as e:
         return f"讀取帳戶資料庫失敗: {e}"
     finally:
@@ -287,6 +313,9 @@ def generate_portfolio_pie_chart() -> str:
     """觸發前端渲染資產現值分布圖"""
     return "✅ 系統已收到請求。請告訴使用者：「已為您在介面側邊欄同步更新最新的資產配置圓餅圖」。"
 
+import datetime
+import re
+
 @tool
 def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
     """手動新增持股或買進股票。請在 ticker 參數中務必傳入「代碼+中文名稱」(例如: '2330.TW 台積電') 以便系統記錄中文名稱。"""
@@ -301,7 +330,6 @@ def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
         if not user: return "錯誤：找不到使用者帳戶。"
 
         # ✨ 新增：優先從 LLM 傳入的字串擷取中文名稱
-        import re
         zh_match = re.search(r'[\u4e00-\u9fa5]+', original_ticker)
         if zh_match:
             stock_name = zh_match.group(0)  # 成功抓到 "台積電"
@@ -332,7 +360,7 @@ def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
         if pos:
             old_total_cost = pos.shares * pos.entry_price
             pos.shares += shares
-            pos.entry_price = (old_total_cost + total_cost) / pos.shares
+            pos.entry_price = round((old_total_cost + total_cost) / pos.shares, 2)
             pos.buy_fee += fee
             
             # 如果舊紀錄的名稱是英文或代碼，趁這次買進把它更新為中文
@@ -344,7 +372,7 @@ def manual_buy_stock(ticker: str, price: float, shares: int) -> str:
                 ticker=ticker_str, 
                 name=stock_name,
                 shares=shares, 
-                entry_price=(total_cost / shares), 
+                entry_price=round(total_cost / shares, 2), 
                 peak_price=price, 
                 buy_fee=fee, 
                 entry_date=today_str  # ✨ 修改這裡：存入真實的日期字串！
