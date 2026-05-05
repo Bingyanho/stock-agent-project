@@ -25,13 +25,16 @@ def _get_valid_ticker(symbol: str) -> str:
         
     return clean_symbol
 
-@lru_cache(maxsize=10)
-def _get_stock_info(ticker_str: str):
-    """強健式資料中心：把 session 拿掉，讓最新版 yfinance 內建的 curl_cffi 自己處理偽裝"""
-    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料...", flush=True)
-    time.sleep(2.0) 
+# ==========================================
+# 🛡️ 核心資料層 (全域快取防護網)
+# ==========================================
+
+@lru_cache(maxsize=32)
+def _get_cached_yf_info(ticker_str: str):
+    """【快取層】專責抓取 info，記憶體內快取 32 筆，避免重複連線"""
+    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} 底層資料 (info)...", flush=True)
+    time.sleep(1.0) # 縮短延遲，因為有快取保護了
     try:
-        # ✨ 關鍵還原：不再傳遞 session，讓 YF 自動處理
         info = yf.Ticker(ticker_str).info
         if not info or not isinstance(info, dict) or ('regularMarketPrice' not in info and 'currentPrice' not in info):
             return None
@@ -40,30 +43,49 @@ def _get_stock_info(ticker_str: str):
         print(f"   -> [注意] Yahoo .info 請求失敗: {e}", flush=True)
         return None
 
+@lru_cache(maxsize=32)
+def _get_cached_yf_history(ticker_str: str):
+    """【快取層】專責抓取 history，補上原本備用方案沒有快取的漏洞"""
+    print(f"   -> [網路請求] 向 Yahoo 索取 {ticker_str} K線資料 (history)...", flush=True)
+    time.sleep(1.0)
+    try:
+        hist = yf.Ticker(ticker_str).history(period="5d")
+        if hist.empty or len(hist) < 2:
+            return None
+        return hist
+    except Exception as e:
+        print(f"   -> [注意] Yahoo .history 請求失敗: {e}", flush=True)
+        return None
+
+# ==========================================
+# 🛠️ LLM 呼叫工具層 (全部改讀快取層)
+# ==========================================
+
 @tool
 def get_stock_price(symbol: str) -> str:
     """取得當前股價數據 (雙重防護)"""
     print(f"\n[Tool] 抓取股價: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     
-    info = _get_stock_info(ticker_str)
+    # 1. 先試著從快取拿 info
+    info = _get_cached_yf_info(ticker_str)
     if info:
         price = info.get('currentPrice', info.get('regularMarketPrice', '無法取得'))
         prev = info.get('previousClose', '無法取得')
         if price != '無法取得':
             return f"目前股價: {price}, 昨收價: {prev}"
             
-    # 備用方案：K 線圖
-    try:
-        print(f"   -> [備用方案] info 失敗，改用 history() 抓取股價...", flush=True)
-        # ✨ 關鍵還原：不再傳遞 session
-        hist = yf.Ticker(ticker_str).history(period="5d")
-        if not hist.empty and len(hist) >= 2:
+    # 2. 備用方案：從快取拿 history
+    print(f"   -> [備用方案] info 失敗，改用 history() 抓取股價...", flush=True)
+    hist = _get_cached_yf_history(ticker_str)
+    if hist is not None:
+        try:
             price = round(hist['Close'].iloc[-1], 2)
             prev = round(hist['Close'].iloc[-2], 2)
             return f"目前股價: {price}, 昨收價: {prev}"
-    except:
-        pass
+        except:
+            pass
+            
     return "⚠️ 股價暫時無法取得"
 
 @tool
@@ -72,12 +94,12 @@ def get_company_info(symbol: str) -> str:
     print(f"\n[Tool] 抓取公司資料: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     
-    info = _get_stock_info(ticker_str)
+    # 統一讀取快取
+    info = _get_cached_yf_info(ticker_str)
     if info:
         return f"【官方紀錄名稱】: {info.get('longName', '未知')} (簡稱: {info.get('shortName', '未知')}), 產業: {info.get('sector', '未知')}"
     
     print(f"   -> [備用方案] API 被擋，改用搜尋引擎抓取公司名稱...", flush=True)
-    time.sleep(2) 
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"台股代號 {symbol} 公司名稱與產業類別")
@@ -91,17 +113,12 @@ def get_stock_news(query: str) -> str:
     """
     【核心工具：分析必備】
     搜尋指定股票的最新新聞、市場評論與重大事件。
-    當使用者要求「分析」股票時，你『必須』呼叫此工具。
-    參數 query 建議傳入：『代碼+中文名稱+新聞』（例如：'2330.TW 台積電 新聞'）
     """
-    # 增加一個 print 讓我們在終端機看得見它有被呼叫
     print(f"\n[Tool] 正在搜尋新聞動態: {query}", flush=True)
     
-    # 🛡️ 優先嘗試：DuckDuckGo 實時搜尋 (台股最強解法)
     try:
         from langchain_community.tools import DuckDuckGoSearchRun
         search = DuckDuckGoSearchRun()
-        # 限制字數，避免 token 爆炸，但保留核心內容
         search_query = query if "新聞" in query else f"{query} 新聞"
         results = search.run(search_query)
         if results and "error" not in results.lower():
@@ -109,12 +126,11 @@ def get_stock_news(query: str) -> str:
     except Exception as e:
         print(f"   -> [警告] DDG 搜尋失敗: {e}", flush=True)
 
-    # 🛡️ 備援：原本的 Yahoo RSS (針對代碼搜尋)
     try:
         import requests
         import xml.etree.ElementTree as ET
         ticker = _get_valid_ticker(query)
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         resp = requests.get(f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}", headers=headers, timeout=5)
         if resp.status_code == 200:
             root = ET.fromstring(resp.text)
@@ -131,14 +147,14 @@ def get_financial_report(symbol: str) -> str:
     print(f"\n[Tool] 抓取財報: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     
-    info = _get_stock_info(ticker_str)
+    # 統一讀取快取
+    info = _get_cached_yf_info(ticker_str)
     if info:
         rev = info.get('totalRevenue', "無法取得")
         margins = info.get('profitMargins', "無法取得")
         return f"代碼: {ticker_str}, 總營收: {rev}, 淨利率: {margins}"
     
     print(f"   -> [備用方案] API 失敗，搜尋最新財報數據...", flush=True)
-    time.sleep(3) 
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"台股 {symbol} 最近一季營收與獲利表現")
@@ -153,7 +169,8 @@ def get_recent_momentum(symbol: str) -> str:
     print(f"\n[Tool] 抓取近期動能: {symbol}", flush=True)
     ticker_str = _get_valid_ticker(symbol)
     
-    info = _get_stock_info(ticker_str)
+    # 統一讀取快取
+    info = _get_cached_yf_info(ticker_str)
     if info:
         q_rev_growth = info.get('quarterlyRevenueGrowth')
         q_earn_growth = info.get('earningsGrowth')
@@ -162,7 +179,6 @@ def get_recent_momentum(symbol: str) -> str:
         return f"【{ticker_str} 動能】\n- 營收成長: {fmt_pct(q_rev_growth)}\n- 盈餘成長: {fmt_pct(q_earn_growth)}\n- EPS: {trailing_eps}"
 
     print(f"   -> [備用方案] API 失敗，搜尋市場動能展望...", flush=True)
-    time.sleep(3) 
     try:
         search = DuckDuckGoSearchRun()
         res = search.run(f"{symbol} 股價動能 營收成長率 展望")
