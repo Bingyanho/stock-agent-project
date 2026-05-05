@@ -3,7 +3,7 @@ import requests
 import uuid
 import os
 
-st.set_page_config(page_title="阿財 - 智能理專 (多人版)", page_icon="📈", layout="centered")
+st.set_page_config(page_title="阿財 - 智能理財專員", page_icon="📈", layout="centered")
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 # 初始化變數
@@ -59,7 +59,7 @@ with st.sidebar:
     else:
         st.info("尚無資產資料或發生錯誤。")
 
-st.title("📈 智能財報與新聞分析 Agent")
+st.title("📈 全自動化 AI Agent 理財專員")
 st.markdown("---")
 
 # 顯示聊天紀錄
