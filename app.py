@@ -141,7 +141,7 @@ with st.sidebar:
 # ==========================================
 colA, colB = st.columns([3, 1])
 with colA:
-    st.markdown("<h1 class='title-text'>阿財 - 您的個人理專</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='title-text'>阿財 - 個人理專</h1>", unsafe_allow_html=True)
     st.markdown("<p class='subtitle-text'>即時網搜 × 量化選股 × 自動記帳</p>", unsafe_allow_html=True)
 
 st.divider() 
