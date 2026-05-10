@@ -81,8 +81,8 @@ if not st.session_state.token:
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        st.markdown("<h1 class='title-text' style='text-align: center;'>智能理財專員平台</h1>", unsafe_allow_html=True)
-        st.markdown("<p class='subtitle-text' style='text-align: center;'>結合量化分析與 AI Agent 的 FinTech 體驗</p>", unsafe_allow_html=True)
+        st.markdown("<h1 class='title-text' style='text-align: center;'>智能理專平台</h1>", unsafe_allow_html=True)
+        st.markdown("<p class='subtitle-text' style='text-align: center;'>結合量化分析與 AI Agent</p>", unsafe_allow_html=True)
         
         with st.container(border=True):
             tab1, tab2 = st.tabs(["🔑 系統登入", "📝 註冊新帳號"])
